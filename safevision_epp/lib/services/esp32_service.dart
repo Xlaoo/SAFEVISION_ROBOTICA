@@ -10,7 +10,7 @@ class Esp32Service {
   static const String ipCasco = '192.168.4.1';
 
   static const Duration timeout =
-  Duration(seconds: 3);
+  Duration(seconds: 5);
 
 
   // ==========================================================
@@ -177,36 +177,24 @@ class Esp32Service {
           respuesta['chaleco'],
         );
 
+        final String estadoChaleco =
+            chaleco['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
 
-        // El ESP32 del chaleco devuelve:
-        //
-        // conectado: true
-        //
-        // Lo convertimos al formato que usa la app:
-        //
-        // conexion: CONECTADO
-        //
+        final String conexionChalecoRaw =
+            chaleco['conexion']?.toString().trim().toUpperCase() ?? '';
 
         final bool conectadoChaleco =
             chaleco['conectado'] == true ||
-                chaleco['conexion']
-                    ?.toString()
-                    .toUpperCase() ==
-                    'CONECTADO';
-
+            conexionChalecoRaw == 'CONECTADO';
 
         chaleco['conexion'] =
-        conectadoChaleco
-            ? 'CONECTADO'
-            : 'DESCONECTADO';
+            conectadoChaleco ? 'CONECTADO' : 'DESCONECTADO';
 
+        chaleco['estado'] = estadoChaleco;
 
-        chaleco['tipo'] =
-        'SECUNDARIO';
+        chaleco['tipo'] = 'SECUNDARIO';
 
-
-        resultado['chaleco'] =
-            chaleco;
+        resultado['chaleco'] = chaleco;
 
       } else {
 
@@ -441,147 +429,8 @@ class Esp32Service {
   // OBTENER ESTADO COMPLETO
   // ==========================================================
 
-  static Future<Map<String, dynamic>> obtenerEstado() async {
-
-    final respuesta =
-    await obtenerEstadoCasco();
-
-
-    // ========================================================
-    // CASCO DESCONECTADO
-    // ========================================================
-
-    if (respuesta == null) {
-
-      print('');
-      print('========================================');
-      print('🚨 CENTRAL DESCONECTADA');
-      print('========================================');
-
-
-      return {
-
-        'casco': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'CENTRAL',
-
-          'sensor':
-          -1,
-        },
-
-
-        'chaleco': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'lentes': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'guanteIzquierdo': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'guanteDerecho': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'botaIzquierda': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'botaDerecha': {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        },
-
-
-        'sistema': {
-
-          'estado':
-          'DESCONECTADO',
-
-          'central':
-          'CASCO',
-        },
-
-
-        'fechaHora':
-        DateTime.now().toIso8601String(),
-      };
-    }
-
-
-    // ========================================================
-    // CASCO CONECTADO
-    //
-    // IMPORTANTE:
-    //
-    // Ya no fabricamos un chaleco desconectado aquí.
-    //
-    // La respuesta completa viene del CASCO.
-    // ========================================================
-
-    return respuesta;
+  static Future<Map<String, dynamic>?> obtenerEstado() async {
+    return await obtenerEstadoCasco();
   }
 
 

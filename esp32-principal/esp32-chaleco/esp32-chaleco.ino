@@ -351,199 +351,81 @@ Probar conexión
 void conectarWiFi()
 {
     Serial.println();
+    Serial.println("========================================");
+    Serial.println("SAFE VISION EPP - CHALECO");
+    Serial.println("========================================");
 
-    Serial.println(
-        "========================================"
+    // 1. Modo Estación
+    WiFi.mode(WIFI_STA);
+    delay(500);
+    // SOLUCIÓN AL AUTH_EXPIRE DEL ESP32-C3 SUPER MINI
+    WiFi.setTxPower(WIFI_POWER_8_5dBm);
+
+    // 2. Configuración de IP fija
+    Serial.println("CONFIGURANDO IP FIJA...");
+    bool configurado = WiFi.config(
+        IP_CHALECO,
+        GATEWAY,
+        SUBNET,
+        DNS
     );
-
-    Serial.println(
-        "       SAFE VISION EPP"
-    );
-
-    Serial.println(
-        "       ESP32-C3 - CHALECO"
-    );
-
-    Serial.println(
-        "========================================"
-    );
-
-
-    Serial.println();
-
-    Serial.println(
-        "CONECTANDO AL CASCO..."
-    );
-
-
-    Serial.print(
-        "SSID: "
-    );
-
-    Serial.println(
-        WIFI_SSID
-    );
-
-
-    // ======================================================
-    // MODO CLIENTE
-    // ======================================================
-
-    WiFi.mode(
-        WIFI_STA
-    );
-
-
-    // ======================================================
-    // IP FIJA
-    // ======================================================
-
-    bool configurado =
-        WiFi.config(
-            IP_CHALECO,
-            GATEWAY,
-            SUBNET,
-            DNS
-        );
-
 
     if (configurado)
     {
-        Serial.println(
-            "IP FIJA CONFIGURADA"
-        );
+        Serial.println("IP FIJA CONFIGURADA: 192.168.4.10");
     }
     else
     {
-        Serial.println(
-            "ERROR CONFIGURANDO IP FIJA"
-        );
+        Serial.println("ERROR CONFIGURANDO IP FIJA");
     }
 
+    // 3. Conexión al AP del Casco
+    Serial.println();
+    Serial.println("CONECTANDO AL CASCO...");
+    Serial.print("SSID: ");
+    Serial.println(WIFI_SSID);
 
-    // ======================================================
-    // CONECTAR
-    // ======================================================
-
-    WiFi.begin(
-        WIFI_SSID,
-        WIFI_PASSWORD
-    );
-
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
     int intentos = 0;
-
-
     while (
         WiFi.status() != WL_CONNECTED
-        &&
-        intentos < 30
+        && intentos < 30
     )
     {
         delay(500);
-
-        Serial.print(
-            "."
-        );
-
+        Serial.print(".");
         intentos++;
     }
 
-
     Serial.println();
 
-
-    // ======================================================
-    // CONECTADO
-    // ======================================================
-
-    if (
-        WiFi.status() == WL_CONNECTED
-    )
+    if (WiFi.status() == WL_CONNECTED)
     {
         Serial.println();
-
-        Serial.println(
-            "========================================"
-        );
-
-        Serial.println(
-            "       WIFI CONECTADO"
-        );
-
-        Serial.println(
-            "========================================"
-        );
-
-
-        Serial.print(
-            "SSID: "
-        );
-
-        Serial.println(
-            WiFi.SSID()
-        );
-
-
-        Serial.print(
-            "IP DEL CHALECO: "
-        );
-
-        Serial.println(
-            WiFi.localIP()
-        );
-
-
-        Serial.print(
-            "GATEWAY: "
-        );
-
-        Serial.println(
-            WiFi.gatewayIP()
-        );
-
-
-        Serial.print(
-            "RSSI: "
-        );
-
-        Serial.println(
-            WiFi.RSSI()
-        );
-
-
-        Serial.println(
-            "========================================"
-        );
+        Serial.println("========================================");
+        Serial.println("WIFI CONECTADO CORRECTAMENTE");
+        Serial.println("========================================");
+        Serial.print("SSID: ");
+        Serial.println(WiFi.SSID());
+        Serial.print("IP: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("GATEWAY: ");
+        Serial.println(WiFi.gatewayIP());
+        Serial.print("RSSI: ");
+        Serial.println(WiFi.RSSI());
+        Serial.println("========================================");
     }
     else
     {
         Serial.println();
-
-        Serial.println(
-            "========================================"
-        );
-
-        Serial.println(
-            "ERROR: NO SE PUDO CONECTAR AL CASCO"
-        );
-
-        Serial.println(
-            "========================================"
-        );
-
-
-        Serial.print(
-            "Estado WiFi: "
-        );
-
-        Serial.println(
-            WiFi.status()
-        );
+        Serial.println("========================================");
+        Serial.println("ERROR: NO SE PUDO CONECTAR AL CASCO");
+        Serial.print("WiFi.status(): ");
+        Serial.println(WiFi.status());
+        Serial.println("========================================");
     }
 }
-
-
 // ==========================================================
 // INICIAR SERVIDOR
 // ==========================================================
@@ -620,7 +502,52 @@ void iniciarServidor()
         "========================================"
     );
 }
+void eventoWiFi(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+    switch (event)
+    {
+        case ARDUINO_EVENT_WIFI_STA_START:
+            Serial.println("[WIFI] STA INICIADA");
+            break;
 
+        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+            Serial.println();
+            Serial.println("========================================");
+            Serial.println("[WIFI] ASOCIADO AL CASCO");
+            Serial.print("SSID: ");
+            Serial.println((char*)info.wifi_sta_connected.ssid);
+            Serial.printf("BSSID AP: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                info.wifi_sta_connected.bssid[0], info.wifi_sta_connected.bssid[1],
+                info.wifi_sta_connected.bssid[2], info.wifi_sta_connected.bssid[3],
+                info.wifi_sta_connected.bssid[4], info.wifi_sta_connected.bssid[5]);
+            Serial.print("CANAL: ");
+            Serial.println(info.wifi_sta_connected.channel);
+            Serial.println("========================================");
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Serial.println();
+            Serial.println("========================================");
+            Serial.print("[WIFI] IP OBTENIDA: ");
+            Serial.println(WiFi.localIP());
+            Serial.println("========================================");
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Serial.println();
+            Serial.println("========================================");
+            Serial.println("[WIFI] DESCONECTADO");
+            Serial.print("REASON CODE: ");
+            Serial.print(info.wifi_sta_disconnected.reason);
+            Serial.print(" - ");
+            Serial.println(WiFi.STA.disconnectReasonName((wifi_err_reason_t)info.wifi_sta_disconnected.reason));
+            Serial.println("========================================");
+            break;
+
+        default:
+            break;
+    }
+}
 
 // ==========================================================
 // SETUP
@@ -631,7 +558,7 @@ void setup()
     Serial.begin(
         115200
     );
-
+    WiFi.onEvent(eventoWiFi);
 
     delay(2000);
 
@@ -772,163 +699,59 @@ void setup()
 
 void loop()
 {
-    // ======================================================
-    // ATENDER PETICIONES HTTP
-    // ======================================================
-
-    if (
-        WiFi.status() == WL_CONNECTED
-    )
+    if (WiFi.status() == WL_CONNECTED)
     {
         server.handleClient();
     }
 
+    int lectura = digitalRead(SENSOR_CHALECO);
 
-    // ======================================================
-    // LEER SENSOR
-    // ======================================================
-
-    int lectura =
-        digitalRead(
-            SENSOR_CHALECO
-        );
-
-
-    // ======================================================
-    // DETECTAR CAMBIO
-    // ======================================================
-
-    if (
-        lectura != ultimoEstado
-    )
+    if (lectura != ultimoEstado)
     {
-        ultimoEstado =
-            lectura;
-
+        ultimoEstado = lectura;
 
         Serial.println();
+        Serial.println("----------------------------------------");
+        Serial.println("CAMBIO DETECTADO EN EL CHALECO");
+        Serial.println("----------------------------------------");
 
-        Serial.println(
-            "----------------------------------------"
-        );
+        Serial.print("GPIO 3 = ");
+        Serial.println(lectura);
 
-        Serial.println(
-            "CAMBIO DETECTADO EN EL CHALECO"
-        );
-
-        Serial.println(
-            "----------------------------------------"
-        );
-
-
-        Serial.print(
-            "GPIO 3 = "
-        );
-
-        Serial.println(
-            lectura
-        );
-
-
-        // ==================================================
-        // IMÁN DETECTADO
-        // ==================================================
-
-        if (
-            lectura == LOW
-        )
+        if (lectura == LOW)
         {
-            Serial.println(
-                "IMAN: DETECTADO"
-            );
-
-            Serial.println(
-                "CHALECO: PUESTO"
-            );
-
-            Serial.println(
-                "ESTADO: EPP COLOCADO"
-            );
+            Serial.println("IMAN: DETECTADO");
+            Serial.println("CHALECO: PUESTO");
+            Serial.println("ESTADO: EPP COLOCADO");
         }
-
-        // ==================================================
-        // IMÁN NO DETECTADO
-        // ==================================================
-
         else
         {
-            Serial.println(
-                "IMAN: NO DETECTADO"
-            );
-
-            Serial.println(
-                "CHALECO: RETIRADO"
-            );
-
-            Serial.println(
-                "ESTADO: EPP NO COLOCADO"
-            );
+            Serial.println("IMAN: NO DETECTADO");
+            Serial.println("CHALECO: RETIRADO");
+            Serial.println("ESTADO: EPP NO COLOCADO");
         }
 
-
-        Serial.println(
-            "----------------------------------------"
-        );
+        Serial.println("----------------------------------------");
     }
-
 
     // ======================================================
     // SI SE PERDIÓ WIFI, RECONECTAR
     // ======================================================
-
-    if (
-        WiFi.status() != WL_CONNECTED
-    )
+   if (WiFi.status() != WL_CONNECTED)
     {
-        static unsigned long
-            ultimoIntento = 0;
-
-
-        if (
-            millis() - ultimoIntento > 5000
-        )
+        static unsigned long ultimoIntento = 0;
+        if (millis() - ultimoIntento > 5000)
         {
-            ultimoIntento =
-                millis();
-
-
+            ultimoIntento = millis();
             Serial.println();
-
-            Serial.println(
-                "WIFI DESCONECTADO"
-            );
-
-            Serial.println(
-                "INTENTANDO RECONECTAR..."
-            );
-
-
+            Serial.println("WIFI DESCONECTADO");
+            Serial.println("INTENTANDO RECONECTAR...");
             WiFi.disconnect();
-
-
             delay(300);
-
-
-            WiFi.config(
-                IP_CHALECO,
-                GATEWAY,
-                SUBNET,
-                DNS
-            );
-
-
-            WiFi.begin(
-                WIFI_SSID,
-                WIFI_PASSWORD
-            );
+            WiFi.config(IP_CHALECO, GATEWAY, SUBNET, DNS);
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
         }
     }
-
 
     delay(50);
 }

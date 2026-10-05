@@ -65,11 +65,11 @@ class EppItem {
       ) {
     return EppItem(
       nombre: nombre,
-      estado: json['estado']?.toString() ?? 'DESCONOCIDO',
+      estado: json['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO',
       incidencias: json['incidencias'] ?? 0,
       desconexiones: json['desconexiones'] ?? 0,
-      conexion: json['conexion']?.toString() ?? 'DESCONECTADO',
-      tipo: json['tipo']?.toString() ?? 'SECUNDARIO',
+      conexion: json['conexion']?.toString().trim().toUpperCase() ?? 'DESCONECTADO',
+      tipo: json['tipo']?.toString().trim().toUpperCase() ?? 'SECUNDARIO',
     );
   }
 }
@@ -219,6 +219,7 @@ class _DashboardPageState
   final Map<String, int> _contadorDesconexiones = {};
 
   int _desconexionSistema = 0;
+  int _fallosConsecutivosCasco = 0;
 
 
 // ==========================================================
@@ -266,9 +267,9 @@ class _DashboardPageState
 
     _inicializarYActualizar();
 
-    // Actualizar datos de la API cada 2 segundos
+    // Actualizar datos de la API cada 3 segundos
     timer = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 3),
           (_) {
         actualizarDatos();
       },
@@ -1046,6 +1047,88 @@ class _DashboardPageState
       final jsonData =
       await Esp32Service.obtenerEstado();
 
+      // ========================================================
+      // MANEJO DE FALLO TEMPORAL vs FALLO DEFINITIVO
+      // ========================================================
+
+      if (jsonData == null) {
+        _fallosConsecutivosCasco++;
+        print('');
+        print('========================================');
+        print('⚠️ FALLO DE COMUNICACIÓN CON CASCO ($_fallosConsecutivosCasco/3)');
+        print('========================================');
+
+        // Si es un fallo transitorio (< 3 intentos) y ya teníamos datos válidos,
+        // no destruimos el estado en pantalla ni disparamos falsas alarmas.
+        if (_fallosConsecutivosCasco < 3 && datos != null) {
+          if (mounted) {
+            setState(() {
+              horaActual = DateTime.now();
+            });
+          }
+          return;
+        }
+
+        // Falla persistente o primer intento sin datos
+        if (!mounted) return;
+
+        EppItem crearSecundarioVacio(String nombre) {
+          return EppItem(
+            nombre: nombre,
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias[nombre] ?? 0,
+            desconexiones: _contadorDesconexiones[nombre] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        }
+
+        final EstadoEpp estadoDesconectado = EstadoEpp(
+          fechaHora: DateTime.now(),
+          estadoSistema: 'DESCONECTADO',
+          central: 'CASCO',
+          casco: EppItem(
+            nombre: 'Casco',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Casco'] ?? 0,
+            desconexiones: _contadorDesconexiones['Casco'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'CENTRAL',
+          ),
+          chaleco: crearSecundarioVacio('Chaleco'),
+          lentes: crearSecundarioVacio('Lentes'),
+          guanteIzquierdo: crearSecundarioVacio('Guante izquierdo'),
+          guanteDerecho: crearSecundarioVacio('Guante derecho'),
+          botaIzquierda: crearSecundarioVacio('Bota izquierda'),
+          botaDerecha: crearSecundarioVacio('Bota derecha'),
+          totalIncidencias: _contadorIncidencias.values.fold(
+            0,
+            (total, cantidad) => total + cantidad,
+          ),
+          totalDesconexiones: _desconexionSistema +
+              _contadorDesconexiones.values.fold(
+                0,
+                (total, cantidad) => total + cantidad,
+              ),
+        );
+
+        await _procesarContadores(estadoDesconectado);
+
+        setState(() {
+          datos = estadoDesconectado;
+          conectado = false;
+          cargando = false;
+          errorMensaje = 'Error conectando con el CASCO';
+          horaActual = DateTime.now();
+        });
+
+        await _procesarAlertas(estadoDesconectado);
+        _actualizarHistorialIncidencias(estadoDesconectado);
+        return;
+      }
+
+      // Si el CASCO respondió correctamente:
+      _fallosConsecutivosCasco = 0;
 
       // ========================================================
       // OBTENER CASCO
@@ -1060,6 +1143,7 @@ class _DashboardPageState
       final String estadoCasco =
           datosCasco['estado']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONOCIDO';
 
@@ -1067,6 +1151,7 @@ class _DashboardPageState
       final String conexionCasco =
           datosCasco['conexion']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONECTADO';
 
@@ -1115,6 +1200,7 @@ class _DashboardPageState
       final String estadoChaleco =
           datosChaleco['estado']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONOCIDO';
 
@@ -1122,6 +1208,7 @@ class _DashboardPageState
       final String conexionChaleco =
           datosChaleco['conexion']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONECTADO';
 
@@ -1137,12 +1224,14 @@ class _DashboardPageState
       final String estadoLentes =
           datosLentes['estado']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONOCIDO';
 
       final String conexionLentes =
           datosLentes['conexion']
               ?.toString()
+              .trim()
               .toUpperCase() ??
               'DESCONECTADO';
 
@@ -1454,11 +1543,15 @@ class _DashboardPageState
         '❌ ERROR APP → ESP32: $e',
       );
 
+      _fallosConsecutivosCasco++;
+
+      if (_fallosConsecutivosCasco < 3 && datos != null) {
+        return;
+      }
 
       if (!mounted) {
         return;
       }
-
 
       setState(() {
 
@@ -2423,10 +2516,10 @@ class _DashboardPageState
       IconData icono,
       ) {
     final bool estaConectado =
-        item.conexion == 'CONECTADO';
+        item.conexion.trim().toUpperCase() == 'CONECTADO';
 
     final bool estaPuesto =
-        item.estado == 'PUESTO';
+        item.estado.trim().toUpperCase() == 'PUESTO';
 
     final bool correcto =
         estaConectado && estaPuesto;

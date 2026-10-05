@@ -1,6 +1,7 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include "esp_wifi.h"
 
 // ==========================================================
 // SAFE VISION EPP
@@ -701,14 +702,8 @@ void crearRedWiFi()
     );
 
 
-    WiFi.mode(
-        WIFI_AP
-    );
-
-
-    delay(
-        500
-    );
+WiFi.mode(WIFI_AP);
+delay(500);
 
 
     bool ipConfigurada =
@@ -735,9 +730,6 @@ void crearRedWiFi()
 
     // ======================================================
     // CREAR RED
-    //
-    // Máximo 8 dispositivos.
-    // Nos servirá luego para guantes y botas.
     // ======================================================
 
     bool resultado =
@@ -746,7 +738,7 @@ void crearRedWiFi()
             AP_PASSWORD,
             1,
             false,
-            8
+            4
         );
 
 
@@ -788,6 +780,34 @@ void crearRedWiFi()
         Serial.println(
             "========================================"
         );
+
+        // Consulta de configuración real con ESP-IDF APIs
+        wifi_config_t ap_conf;
+        esp_wifi_get_config(WIFI_IF_AP, &ap_conf);
+        uint8_t canalReal = 0;
+        wifi_second_chan_t secChan;
+        esp_wifi_get_channel(&canalReal, &secChan);
+        wifi_sta_list_t sta_list;
+        esp_wifi_ap_get_sta_list(&sta_list);
+
+        const char* authStr = "DESCONOCIDO";
+        switch (ap_conf.ap.authmode) {
+            case WIFI_AUTH_OPEN: authStr = "OPEN"; break;
+            case WIFI_AUTH_WEP: authStr = "WEP"; break;
+            case WIFI_AUTH_WPA_PSK: authStr = "WPA_PSK"; break;
+            case WIFI_AUTH_WPA2_PSK: authStr = "WPA2_PSK"; break;
+            case WIFI_AUTH_WPA_WPA2_PSK: authStr = "WPA_WPA2_PSK"; break;
+            case WIFI_AUTH_WPA3_PSK: authStr = "WPA3_PSK"; break;
+            case WIFI_AUTH_WPA2_WPA3_PSK: authStr = "WPA2_WPA3_PSK"; break;
+            default: authStr = "OTRO"; break;
+        }
+
+        Serial.println("[CASCO DEBUG]");
+        Serial.printf("CANAL REAL: %d\n", canalReal);
+        Serial.printf("AUTH MODE: %d - %s\n", ap_conf.ap.authmode, authStr);
+        Serial.printf("CLIENTES: %d\n", sta_list.num);
+        Serial.printf("POTENCIA TX: %d\n", WiFi.getTxPower());
+        Serial.println("========================================");
     }
     else
     {
@@ -874,6 +894,44 @@ void setup()
         115200
     );
 
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_AP_START) {
+            Serial.println();
+            Serial.println("[CASCO EVENTO] AP_STARTED");
+        } else if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED) {
+            Serial.println();
+            Serial.println("========================================");
+            Serial.println("[CASCO WIFI] CLIENTE CONECTADO");
+            Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X | AID: %d\n",
+                info.wifi_ap_staconnected.mac[0], info.wifi_ap_staconnected.mac[1],
+                info.wifi_ap_staconnected.mac[2], info.wifi_ap_staconnected.mac[3],
+                info.wifi_ap_staconnected.mac[4], info.wifi_ap_staconnected.mac[5],
+                info.wifi_ap_staconnected.aid);
+            Serial.println("========================================");
+        } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+            Serial.println();
+            Serial.println("========================================");
+            Serial.println("[CASCO WIFI] CLIENTE DESCONECTADO");
+            Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X | AID: %d\n",
+                info.wifi_ap_stadisconnected.mac[0], info.wifi_ap_stadisconnected.mac[1],
+                info.wifi_ap_stadisconnected.mac[2], info.wifi_ap_stadisconnected.mac[3],
+                info.wifi_ap_stadisconnected.mac[4], info.wifi_ap_stadisconnected.mac[5],
+                info.wifi_ap_stadisconnected.aid);
+            Serial.println("========================================");
+        } else if (event == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) {
+            Serial.println("[CASCO WIFI] IP ASIGNADA A CLIENTE (DHCP)");
+        } else if (event == ARDUINO_EVENT_WIFI_AP_PROBEREQRECVED) {
+            static unsigned long ultimoProbe = 0;
+            if (millis() - ultimoProbe > 2000) {
+                ultimoProbe = millis();
+                Serial.printf("[CASCO RF] Probe Request recibido | MAC: %02X:%02X:%02X:%02X:%02X:%02X | RSSI: %d dBm\n",
+                    info.wifi_ap_probereqrecved.mac[0], info.wifi_ap_probereqrecved.mac[1],
+                    info.wifi_ap_probereqrecved.mac[2], info.wifi_ap_probereqrecved.mac[3],
+                    info.wifi_ap_probereqrecved.mac[4], info.wifi_ap_probereqrecved.mac[5],
+                    info.wifi_ap_probereqrecved.rssi);
+            }
+        }
+    });
 
     delay(
         2000
