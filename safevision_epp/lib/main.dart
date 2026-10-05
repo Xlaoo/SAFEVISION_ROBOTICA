@@ -212,7 +212,8 @@ class _DashboardPageState
 
   final Map<String, IncidenciaEpp> _incidenciasActivas = {};
 
-  bool _actualizando = false;
+  bool _consultaEnCurso = false;
+  int _idConsultaActual = 0;
   bool _sistemaSeConecto = false;
   final Map<String, int> _contadorIncidencias = {};
 
@@ -220,6 +221,8 @@ class _DashboardPageState
 
   int _desconexionSistema = 0;
   int _fallosConsecutivosCasco = 0;
+  int _fallosConsecutivosChaleco = 0;
+  int _fallosConsecutivosLentes = 0;
 
 
 // ==========================================================
@@ -1031,26 +1034,33 @@ class _DashboardPageState
   // CONSULTAR API
   // ==========================================================
   Future<void> actualizarDatos() async {
-
-    if (_actualizando) {
+    // --------------------------------------------------------
+    // CANDADO DE SONDEO ASÍNCRONO
+    // Evita ejecuciones simultáneas de actualizarDatos()
+    // --------------------------------------------------------
+    if (_consultaEnCurso) {
       return;
     }
 
-    _actualizando = true;
+    _consultaEnCurso = true;
+    final int idConsulta = ++_idConsultaActual;
 
     try {
+      // ========================================================
+      // OBTENER ESTADO COMPLETO DE LA CENTRAL (CASCO)
+      // ========================================================
+      final jsonData = await Esp32Service.obtenerEstado();
+
+      // Si una consulta posterior se completó mientras esta esperaba, descartamos
+      if (idConsulta != _idConsultaActual) {
+        return;
+      }
 
       // ========================================================
-      // OBTENER ESTADO COMPLETO
+      // MANEJO DE CAÍDA DE LA CENTRAL:
+      // Solamente cuando la APP realmente pierde comunicación con
+      // http://192.168.4.1/estado durante varios intentos consecutivos.
       // ========================================================
-
-      final jsonData =
-      await Esp32Service.obtenerEstado();
-
-      // ========================================================
-      // MANEJO DE FALLO TEMPORAL vs FALLO DEFINITIVO
-      // ========================================================
-
       if (jsonData == null) {
         _fallosConsecutivosCasco++;
         print('');
@@ -1069,7 +1079,8 @@ class _DashboardPageState
           return;
         }
 
-        // Falla persistente o primer intento sin datos
+        // Falla persistente (3 o más intentos consecutivos):
+        // Recién entonces se considera que la central y el sistema perdieron conexión.
         if (!mounted) return;
 
         EppItem crearSecundarioVacio(String nombre) {
@@ -1127,285 +1138,240 @@ class _DashboardPageState
         return;
       }
 
-      // Si el CASCO respondió correctamente:
+      // Si el CASCO respondió correctamente (HTTP 200 con JSON válido):
       _fallosConsecutivosCasco = 0;
 
       // ========================================================
-      // OBTENER CASCO
+      // 1. CASCO (CENTRAL)
+      // La conexión del casco depende EXCLUSIVAMENTE de la
+      // comunicación real con la central, NO de su sensor físico.
+      // Si recibimos JSON válido, el CASCO está CONECTADO.
       // ========================================================
-
       final Map<String, dynamic> datosCasco =
-      Map<String, dynamic>.from(
-        jsonData['casco'] ?? {},
-      );
-
+          Map<String, dynamic>.from(jsonData['casco'] ?? {});
 
       final String estadoCasco =
-          datosCasco['estado']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONOCIDO';
+          datosCasco['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
 
-
-      final String conexionCasco =
-          datosCasco['conexion']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONECTADO';
-
-
-      final int sensor =
-          int.tryParse(
-            datosCasco['sensor']
-                ?.toString() ??
-                '-1',
+      final int sensor = int.tryParse(
+            datosCasco['sensor']?.toString() ?? '-1',
           ) ??
-              -1;
+          -1;
 
-
-      // ========================================================
-      // SABER SI LA CENTRAL ESTÁ CONECTADA
-      // ========================================================
-
-      final bool cascoConectado =
-          conexionCasco == 'CONECTADO';
-
+      final EppItem casco = EppItem(
+        nombre: 'Casco',
+        estado: estadoCasco,
+        incidencias: _contadorIncidencias['Casco'] ?? 0,
+        desconexiones: _contadorDesconexiones['Casco'] ?? 0,
+        conexion: 'CONECTADO',
+        tipo: 'CENTRAL',
+      );
 
       print('');
       print('========================================');
       print('📡 ESTADO GENERAL');
       print('========================================');
       print('CASCO: $estadoCasco');
-      print('CONEXIÓN CASCO: $conexionCasco');
+      print('CONEXIÓN CASCO: CONECTADO');
       print('SENSOR: $sensor');
-      print(
-        'SISTEMA: '
-            '${cascoConectado ? 'CONECTADO' : 'DESCONECTADO'}',
-      );
+      print('SISTEMA: CONECTADO');
       print('========================================');
 
+      // ========================================================
+      // 2. CHALECO (SECUNDARIO) - TOTALMENTE INDEPENDIENTE
+      // "RETIRADO" JAMÁS significa "DESCONECTADO".
+      // Que el casco esté RETIRADO no modifica el chaleco.
+      // ========================================================
+      EppItem chaleco;
+      final dynamic rawChaleco = jsonData['chaleco'];
+      if (rawChaleco is Map) {
+        final Map<String, dynamic> datosChaleco =
+            Map<String, dynamic>.from(rawChaleco);
+
+        final String estadoChalecoRaw =
+            datosChaleco['estado']?.toString().trim().toUpperCase() ?? '';
+
+        final String conexionChalecoRaw =
+            datosChaleco['conexion']?.toString().trim().toUpperCase() ?? '';
+
+        final bool chalecoEstaConectado = (datosChaleco['conectado'] == true ||
+            conexionChalecoRaw == 'CONECTADO');
+
+        if (chalecoEstaConectado) {
+          _fallosConsecutivosChaleco = 0;
+          chaleco = EppItem(
+            nombre: 'Chaleco',
+            estado: estadoChalecoRaw.isNotEmpty && estadoChalecoRaw != 'DESCONOCIDO'
+                ? estadoChalecoRaw
+                : (datos?.chaleco.estado != null && datos!.chaleco.estado != 'DESCONOCIDO'
+                    ? datos!.chaleco.estado
+                    : 'PUESTO'),
+            incidencias: _contadorIncidencias['Chaleco'] ?? 0,
+            desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          // Si hubo un fallo puntual de comunicación (< 3 intentos) y ya teníamos datos válidos:
+          _fallosConsecutivosChaleco++;
+          if (_fallosConsecutivosChaleco < 3 &&
+              datos != null &&
+              datos!.chaleco.conexion == 'CONECTADO') {
+            chaleco = EppItem(
+              nombre: 'Chaleco',
+              estado: datos!.chaleco.estado,
+              incidencias: _contadorIncidencias['Chaleco'] ?? 0,
+              desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
+              conexion: 'CONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          } else {
+            chaleco = EppItem(
+              nombre: 'Chaleco',
+              estado: 'DESCONOCIDO',
+              incidencias: _contadorIncidencias['Chaleco'] ?? 0,
+              desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
+              conexion: 'DESCONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          }
+        }
+      } else {
+        if (datos != null &&
+            datos!.chaleco.conexion == 'CONECTADO' &&
+            _fallosConsecutivosChaleco < 3) {
+          _fallosConsecutivosChaleco++;
+          chaleco = EppItem(
+            nombre: 'Chaleco',
+            estado: datos!.chaleco.estado,
+            incidencias: _contadorIncidencias['Chaleco'] ?? 0,
+            desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          chaleco = EppItem(
+            nombre: 'Chaleco',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Chaleco'] ?? 0,
+            desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        }
+      }
+
+      print('🦺 CHALECO: ESTADO=${chaleco.estado} | CONEXIÓN=${chaleco.conexion}');
 
       // ========================================================
-      // OBTENER CHALECO
+      // 3. LENTES (SECUNDARIO) - TOTALMENTE INDEPENDIENTE
       // ========================================================
+      EppItem lentes;
+      final dynamic rawLentes = jsonData['lentes'];
+      if (rawLentes is Map) {
+        final Map<String, dynamic> datosLentes =
+            Map<String, dynamic>.from(rawLentes);
 
-      final Map<String, dynamic> datosChaleco =
-      Map<String, dynamic>.from(
-        jsonData['chaleco'] ?? {},
-      );
+        final String estadoLentesRaw =
+            datosLentes['estado']?.toString().trim().toUpperCase() ?? '';
 
+        final String conexionLentesRaw =
+            datosLentes['conexion']?.toString().trim().toUpperCase() ?? '';
 
-      final String estadoChaleco =
-          datosChaleco['estado']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONOCIDO';
+        final bool lentesEstaConectado = (datosLentes['conectado'] == true ||
+            conexionLentesRaw == 'CONECTADO');
 
+        if (lentesEstaConectado) {
+          _fallosConsecutivosLentes = 0;
+          lentes = EppItem(
+            nombre: 'Lentes',
+            estado: estadoLentesRaw.isNotEmpty && estadoLentesRaw != 'DESCONOCIDO'
+                ? estadoLentesRaw
+                : (datos?.lentes.estado != null && datos!.lentes.estado != 'DESCONOCIDO'
+                    ? datos!.lentes.estado
+                    : 'PUESTO'),
+            incidencias: _contadorIncidencias['Lentes'] ?? 0,
+            desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          _fallosConsecutivosLentes++;
+          if (_fallosConsecutivosLentes < 3 &&
+              datos != null &&
+              datos!.lentes.conexion == 'CONECTADO') {
+            lentes = EppItem(
+              nombre: 'Lentes',
+              estado: datos!.lentes.estado,
+              incidencias: _contadorIncidencias['Lentes'] ?? 0,
+              desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+              conexion: 'CONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          } else {
+            lentes = EppItem(
+              nombre: 'Lentes',
+              estado: 'DESCONOCIDO',
+              incidencias: _contadorIncidencias['Lentes'] ?? 0,
+              desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+              conexion: 'DESCONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          }
+        }
+      } else {
+        if (datos != null &&
+            datos!.lentes.conexion == 'CONECTADO' &&
+            _fallosConsecutivosLentes < 3) {
+          _fallosConsecutivosLentes++;
+          lentes = EppItem(
+            nombre: 'Lentes',
+            estado: datos!.lentes.estado,
+            incidencias: _contadorIncidencias['Lentes'] ?? 0,
+            desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          lentes = EppItem(
+            nombre: 'Lentes',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Lentes'] ?? 0,
+            desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        }
+      }
 
-      final String conexionChaleco =
-          datosChaleco['conexion']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONECTADO';
-
-      // ========================================================
-// OBTENER LENTES
-// ========================================================
-
-      final Map<String, dynamic> datosLentes =
-      Map<String, dynamic>.from(
-        jsonData['lentes'] ?? {},
-      );
-
-      final String estadoLentes =
-          datosLentes['estado']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONOCIDO';
-
-      final String conexionLentes =
-          datosLentes['conexion']
-              ?.toString()
-              .trim()
-              .toUpperCase() ??
-              'DESCONECTADO';
-
-      final double distanciaLentes =
-          double.tryParse(
-            datosLentes['distancia_cm']
-                ?.toString() ??
-                '-1',
-          ) ??
-              -1;
-
-      print('');
-      print('========================================');
-      print('👓 LENTES');
-      print('========================================');
-      print('ESTADO: $estadoLentes');
-      print('CONEXIÓN: $conexionLentes');
-      print('DISTANCIA: $distanciaLentes cm');
-      print('========================================');
-      // ========================================================
-      // CASCO
-      // ========================================================
-
-      final EppItem casco = EppItem(
-
-        nombre: 'Casco',
-
-        estado: estadoCasco,
-
-        incidencias:
-        _contadorIncidencias['Casco'] ?? 0,
-
-        desconexiones:
-        _contadorDesconexiones['Casco'] ?? 0,
-
-        conexion:
-        cascoConectado
-            ? 'CONECTADO'
-            : 'DESCONECTADO',
-
-        tipo: 'CENTRAL',
-      );
-
+      print('👓 LENTES: ESTADO=${lentes.estado} | CONEXIÓN=${lentes.conexion}');
 
       // ========================================================
-      // CHALECO
+      // 4. RESTO DE EPP (SECUNDARIOS PENDIENTES DE HARDWARE)
       // ========================================================
-
-      final EppItem chaleco = EppItem(
-
-        nombre: 'Chaleco',
-
-        estado:
-        cascoConectado
-            ? estadoChaleco
-            : 'DESCONOCIDO',
-
-        incidencias:
-        _contadorIncidencias['Chaleco'] ?? 0,
-
-        desconexiones:
-        _contadorDesconexiones['Chaleco'] ?? 0,
-
-        conexion:
-        cascoConectado
-            ? conexionChaleco
-            : 'DESCONECTADO',
-
-        tipo: 'SECUNDARIO',
-      );
-
-      // ========================================================
-// LENTES
-// ========================================================
-
-      final EppItem lentes = EppItem(
-
-        nombre: 'Lentes',
-
-        estado:
-        cascoConectado
-            ? estadoLentes
-            : 'DESCONOCIDO',
-
-        incidencias:
-        _contadorIncidencias['Lentes'] ?? 0,
-
-        desconexiones:
-        _contadorDesconexiones['Lentes'] ?? 0,
-
-        conexion:
-        cascoConectado
-            ? conexionLentes
-            : 'DESCONECTADO',
-
-        tipo: 'SECUNDARIO',
-      );
-      // ========================================================
-      // RESTO DE EPP
-      // ========================================================
-      //
-      // IMPORTANTE:
-      // Si el casco está apagado:
-      // TODO queda DESCONECTADO.
-      //
-      // Si el casco está encendido pero todavía no
-      // implementamos esos ESP32, también quedan
-      // DESCONECTADOS.
-      // ========================================================
-
-      EppItem crearSecundario(
-          String nombre,
-          ) {
-
+      EppItem crearSecundario(String nombre) {
         return EppItem(
-
           nombre: nombre,
-
-          estado:
-          cascoConectado
-              ? 'DESCONOCIDO'
-              : 'DESCONOCIDO',
-
-          incidencias:
-          _contadorIncidencias[nombre] ?? 0,
-
-          desconexiones:
-          _contadorDesconexiones[nombre] ?? 0,
-
-          conexion:
-          cascoConectado
-              ? 'DESCONECTADO'
-              : 'DESCONECTADO',
-
+          estado: 'DESCONOCIDO',
+          incidencias: _contadorIncidencias[nombre] ?? 0,
+          desconexiones: _contadorDesconexiones[nombre] ?? 0,
+          conexion: 'DESCONECTADO',
           tipo: 'SECUNDARIO',
         );
       }
 
-      final EppItem guanteIzquierdo =
-      crearSecundario('Guante izquierdo');
+      final EppItem guanteIzquierdo = crearSecundario('Guante izquierdo');
+      final EppItem guanteDerecho = crearSecundario('Guante derecho');
+      final EppItem botaIzquierda = crearSecundario('Bota izquierda');
+      final EppItem botaDerecha = crearSecundario('Bota derecha');
 
-      final EppItem guanteDerecho =
-      crearSecundario('Guante derecho');
-
-      final EppItem botaIzquierda =
-      crearSecundario('Bota izquierda');
-
-      final EppItem botaDerecha =
-      crearSecundario('Bota derecha');
       // ========================================================
-// PROCESAR EVENTOS
-// ========================================================
-//
-// Aquí se detecta:
-//
-// PUESTO → RETIRADO       = +1 incidencia
-//
-// CONECTADO → DESCONECTADO = +1 desconexión
-//
-// Si permanece igual      = no suma
-//
-// ========================================================
-
-      final EstadoEpp estadoParaContadores =
-      EstadoEpp(
+      // ESTADO GENERAL DEL SISTEMA
+      // ========================================================
+      final EstadoEpp nuevoEstado = EstadoEpp(
         fechaHora: DateTime.now(),
-
-        estadoSistema:
-        cascoConectado
-            ? 'CONECTADO'
-            : 'DESCONECTADO',
-
+        estadoSistema: 'CONECTADO',
         central: 'CASCO',
-
         casco: casco,
         chaleco: chaleco,
         lentes: lentes,
@@ -1413,139 +1379,55 @@ class _DashboardPageState
         guanteDerecho: guanteDerecho,
         botaIzquierda: botaIzquierda,
         botaDerecha: botaDerecha,
-
-        totalIncidencias:
-        _contadorIncidencias.values.fold(
+        totalIncidencias: _contadorIncidencias.values.fold(
           0,
-              (total, cantidad) =>
-          total + cantidad,
+          (total, cantidad) => total + cantidad,
         ),
-
-        totalDesconexiones:
-        _desconexionSistema +
+        totalDesconexiones: _desconexionSistema +
             _contadorDesconexiones.values.fold(
               0,
-                  (total, cantidad) =>
-              total + cantidad,
+              (total, cantidad) => total + cantidad,
             ),
       );
 
-
-      await _procesarContadores(
-        estadoParaContadores,
-      );
-
       // ========================================================
-      // ESTADO GENERAL
+      // PROCESAR CONTADORES DE EVENTOS
       // ========================================================
-
-      final EstadoEpp nuevoEstado =
-      EstadoEpp(
-
-        fechaHora:
-        DateTime.now(),
-
-        estadoSistema:
-        cascoConectado
-            ? 'CONECTADO'
-            : 'DESCONECTADO',
-
-        central: 'CASCO',
-
-        casco: casco,
-
-        chaleco: chaleco,
-
-        lentes: lentes,
-
-        guanteIzquierdo:
-        guanteIzquierdo,
-
-        guanteDerecho:
-        guanteDerecho,
-
-        botaIzquierda:
-        botaIzquierda,
-
-        botaDerecha:
-        botaDerecha,
-
-        totalIncidencias:
-        _contadorIncidencias.values.fold(
-          0,
-              (total, cantidad) =>
-          total + cantidad,
-        ),
-
-        totalDesconexiones:
-        _desconexionSistema +
-            _contadorDesconexiones.values.fold(
-              0,
-                  (total, cantidad) =>
-              total + cantidad,
-            ),
-      );
-
+      await _procesarContadores(nuevoEstado);
 
       // ========================================================
       // ACTUALIZAR INTERFAZ
       // ========================================================
-
       if (!mounted) {
         return;
       }
 
       setState(() {
-
-        datos =
-            nuevoEstado;
-
-        conectado =
-            cascoConectado;
-
-        cargando =
-        false;
-
-        errorMensaje =
-        '';
-
-        horaActual =
-            DateTime.now();
+        datos = nuevoEstado;
+        conectado = true;
+        cargando = false;
+        errorMensaje = '';
+        horaActual = DateTime.now();
       });
 
-
       // ========================================================
-      // PROCESAR ALERTAS
+      // PROCESAR ALERTAS Y HISTORIAL
       // ========================================================
+      await _procesarAlertas(nuevoEstado);
+      _actualizarHistorialIncidencias(nuevoEstado);
 
-      await _procesarAlertas(
-        nuevoEstado,
-      );
-
-
-      // ========================================================
-      // HISTORIAL
-      // ========================================================
-
-      _actualizarHistorialIncidencias(
-        nuevoEstado,
-      );
-
-
-      print(
-        '✅ DATOS MOSTRADOS EN LA APP',
-      );
-
-
+      print('✅ DATOS MOSTRADOS EN LA APP');
     } catch (e) {
-
-      print(
-        '❌ ERROR APP → ESP32: $e',
-      );
+      print('❌ ERROR APP → ESP32: $e');
 
       _fallosConsecutivosCasco++;
 
       if (_fallosConsecutivosCasco < 3 && datos != null) {
+        if (mounted) {
+          setState(() {
+            horaActual = DateTime.now();
+          });
+        }
         return;
       }
 
@@ -1554,22 +1436,12 @@ class _DashboardPageState
       }
 
       setState(() {
-
-        conectado =
-        false;
-
-        cargando =
-        false;
-
-        errorMensaje =
-        'Error conectando con el ESP32';
+        conectado = false;
+        cargando = false;
+        errorMensaje = 'Error conectando con el ESP32';
       });
-
-
     } finally {
-
-      _actualizando =
-      false;
+      _consultaEnCurso = false;
     }
   }
 

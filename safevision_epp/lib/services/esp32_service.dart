@@ -198,20 +198,7 @@ class Esp32Service {
 
       } else {
 
-        // Si por alguna razón el casco no
-        // devuelve todavía el chaleco.
-
-        resultado['chaleco'] = {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        };
+        resultado['chaleco'] = null;
       }
 
 
@@ -221,24 +208,33 @@ class Esp32Service {
 
       if (respuesta['lentes'] is Map) {
 
-        resultado['lentes'] =
+        final Map<String, dynamic> lentes =
         Map<String, dynamic>.from(
           respuesta['lentes'],
         );
 
+        final String estadoLentes =
+            lentes['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
+
+        final String conexionLentesRaw =
+            lentes['conexion']?.toString().trim().toUpperCase() ?? '';
+
+        final bool conectadoLentes =
+            lentes['conectado'] == true ||
+            conexionLentesRaw == 'CONECTADO';
+
+        lentes['conexion'] =
+            conectadoLentes ? 'CONECTADO' : 'DESCONECTADO';
+
+        lentes['estado'] = estadoLentes;
+
+        lentes['tipo'] = 'SECUNDARIO';
+
+        resultado['lentes'] = lentes;
+
       } else {
 
-        resultado['lentes'] = {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        };
+        resultado['lentes'] = null;
       }
 
 
