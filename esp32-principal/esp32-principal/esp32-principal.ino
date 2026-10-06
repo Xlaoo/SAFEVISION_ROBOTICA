@@ -17,6 +17,9 @@
 // LENTES:
 // 192.168.4.11
 //
+// GUANTE DERECHO:
+// 192.168.4.12
+//
 // ==========================================================
 
 
@@ -453,6 +456,24 @@ void manejarEstado()
 
 
     // ======================================================
+    // GUANTE DERECHO
+    // ======================================================
+
+    String estadoGuante =
+        "DESCONOCIDO";
+
+    String conexionGuante =
+        "DESCONECTADO";
+
+    consultarEpp(
+        "GUANTE DERECHO",
+        "http://192.168.4.12/estado",
+        estadoGuante,
+        conexionGuante
+    );
+
+
+    // ======================================================
     // JSON COMPLETO PARA FLUTTER
     // ======================================================
 
@@ -525,6 +546,27 @@ void manejarEstado()
             1
         ) +
         ","
+
+        "\"tipo\":\"SECUNDARIO\""
+
+        "},"
+
+
+        // --------------------------------------------------
+        // GUANTE DERECHO
+        // --------------------------------------------------
+
+        "\"guante_derecho\":{"
+
+        "\"epp\":\"GUANTE_DERECHO\","
+
+        "\"estado\":\"" +
+        estadoGuante +
+        "\","
+
+        "\"conexion\":\"" +
+        conexionGuante +
+        "\","
 
         "\"tipo\":\"SECUNDARIO\""
 
@@ -651,6 +693,10 @@ LENTES: 192.168.4.11
 </p>
 
 <p>
+GUANTE DERECHO: 192.168.4.12
+</p>
+
+<p>
 <a href="/estado">
 Consultar sistema
 </a>
@@ -738,7 +784,7 @@ delay(500);
             AP_PASSWORD,
             1,
             false,
-            4
+            8
         );
 
 
