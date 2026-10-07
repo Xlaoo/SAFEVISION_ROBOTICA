@@ -527,7 +527,11 @@ void conectarWiFi()
     WiFi.mode(
         WIFI_STA
     );
-
+    delay(500);
+// IMPORTANTE PARA ESP32-C3 SUPER MINI
+// Misma configuración que permitió conectar
+// CHALECO y GUANTE al CASCO.
+WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
     // ======================================================
     // IP FIJA

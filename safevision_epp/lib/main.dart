@@ -138,7 +138,11 @@ class EstadoEpp {
 
       guanteIzquierdo: EppItem.fromJson(
         'Guante izquierdo',
-        json['guanteIzquierdo'] ?? {},
+        json['guante_izquierdo'] is Map
+            ? Map<String, dynamic>.from(json['guante_izquierdo'])
+            : (json['guanteIzquierdo'] is Map
+                ? Map<String, dynamic>.from(json['guanteIzquierdo'])
+                : {}),
       ),
 
       guanteDerecho: EppItem.fromJson(
@@ -228,6 +232,7 @@ class _DashboardPageState
   int _fallosConsecutivosChaleco = 0;
   int _fallosConsecutivosLentes = 0;
   int _fallosConsecutivosGuanteDerecho = 0;
+  int _fallosConsecutivosGuanteIzquierdo = 0;
 
 
 // ==========================================================
@@ -1138,7 +1143,7 @@ class _DashboardPageState
           horaActual = DateTime.now();
         });
 
-        await _procesarAlertas(estadoDesconectado);
+        unawaited(_procesarAlertas(estadoDesconectado));
         _actualizarHistorialIncidencias(estadoDesconectado);
         return;
       }
@@ -1438,7 +1443,93 @@ class _DashboardPageState
       print('🧤 GUANTE DERECHO: ESTADO=${guanteDerecho.estado} | CONEXIÓN=${guanteDerecho.conexion}');
 
       // ========================================================
-      // 5. RESTO DE EPP (SECUNDARIOS PENDIENTES DE HARDWARE)
+      // 5. GUANTE IZQUIERDO (SECUNDARIO) - TOTALMENTE INDEPENDIENTE
+      // "RETIRADO" JAMÁS significa "DESCONECTADO".
+      // ========================================================
+      EppItem guanteIzquierdo;
+      final dynamic rawGuanteIzquierdo =
+          jsonData['guante_izquierdo'] ?? jsonData['guanteIzquierdo'];
+      if (rawGuanteIzquierdo is Map) {
+        final Map<String, dynamic> datosGuante =
+            Map<String, dynamic>.from(rawGuanteIzquierdo);
+
+        final String estadoGuanteRaw =
+            datosGuante['estado']?.toString().trim().toUpperCase() ?? '';
+
+        final String conexionGuanteRaw =
+            datosGuante['conexion']?.toString().trim().toUpperCase() ?? '';
+
+        final bool guanteEstaConectado = (datosGuante['conectado'] == true ||
+            conexionGuanteRaw == 'CONECTADO');
+
+        if (guanteEstaConectado) {
+          _fallosConsecutivosGuanteIzquierdo = 0;
+          guanteIzquierdo = EppItem(
+            nombre: 'Guante izquierdo',
+            estado: estadoGuanteRaw.isNotEmpty && estadoGuanteRaw != 'DESCONOCIDO'
+                ? estadoGuanteRaw
+                : (datos?.guanteIzquierdo.estado != null && datos!.guanteIzquierdo.estado != 'DESCONOCIDO'
+                    ? datos!.guanteIzquierdo.estado
+                    : (estadoGuanteRaw.isNotEmpty ? estadoGuanteRaw : 'DESCONOCIDO')),
+            incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+            desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          // Si hubo un fallo puntual de comunicación (< 3 intentos) y ya teníamos datos válidos:
+          _fallosConsecutivosGuanteIzquierdo++;
+          if (_fallosConsecutivosGuanteIzquierdo < 3 &&
+              datos != null &&
+              datos!.guanteIzquierdo.conexion == 'CONECTADO') {
+            guanteIzquierdo = EppItem(
+              nombre: 'Guante izquierdo',
+              estado: datos!.guanteIzquierdo.estado,
+              incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+              desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+              conexion: 'CONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          } else {
+            guanteIzquierdo = EppItem(
+              nombre: 'Guante izquierdo',
+              estado: 'DESCONOCIDO',
+              incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+              desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+              conexion: 'DESCONECTADO',
+              tipo: 'SECUNDARIO',
+            );
+          }
+        }
+      } else {
+        if (datos != null &&
+            datos!.guanteIzquierdo.conexion == 'CONECTADO' &&
+            _fallosConsecutivosGuanteIzquierdo < 3) {
+          _fallosConsecutivosGuanteIzquierdo++;
+          guanteIzquierdo = EppItem(
+            nombre: 'Guante izquierdo',
+            estado: datos!.guanteIzquierdo.estado,
+            incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+            desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+            conexion: 'CONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        } else {
+          guanteIzquierdo = EppItem(
+            nombre: 'Guante izquierdo',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+            desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+        }
+      }
+
+      print('🧤 GUANTE IZQUIERDO: ESTADO=${guanteIzquierdo.estado} | CONEXIÓN=${guanteIzquierdo.conexion}');
+
+      // ========================================================
+      // 6. RESTO DE EPP (SECUNDARIOS PENDIENTES DE HARDWARE)
       // ========================================================
       EppItem crearSecundario(String nombre) {
         return EppItem(
@@ -1451,7 +1542,6 @@ class _DashboardPageState
         );
       }
 
-      final EppItem guanteIzquierdo = crearSecundario('Guante izquierdo');
       final EppItem botaIzquierda = crearSecundario('Bota izquierda');
       final EppItem botaDerecha = crearSecundario('Bota derecha');
 
@@ -1503,7 +1593,7 @@ class _DashboardPageState
       // ========================================================
       // PROCESAR ALERTAS Y HISTORIAL
       // ========================================================
-      await _procesarAlertas(nuevoEstado);
+      unawaited(_procesarAlertas(nuevoEstado));
       _actualizarHistorialIncidencias(nuevoEstado);
 
       print('✅ DATOS MOSTRADOS EN LA APP');

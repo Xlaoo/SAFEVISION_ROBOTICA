@@ -20,14 +20,17 @@ class AlertService {
 
   static Set<String> _retiradosActuales = {};
   static Set<String> _desconectadosActuales = {};
+  static bool _centralDesconectadaActual = false;
 
   // ==========================================================
-  // CONTROL DEL CICLO
+  // CONTROL DEL CICLO Y CANCELACIÓN INMEDIATA
   // ==========================================================
 
   static int _ciclo = 0;
 
-  static bool _alertaActiva = false;
+  // Completers activos para cancelar/desbloquear sin esperar timeouts
+  static Completer<void>? _completerVozActual;
+  static Completer<void>? _completerAudioActual;
 
   // ==========================================================
   // INICIALIZAR
@@ -67,59 +70,122 @@ class AlertService {
   }
 
   // ==========================================================
-  // HABLAR Y ESPERAR A QUE TERMINE
+  // HABLAR Y ESPERAR A QUE TERMINE (CON PREEMCIÓN INMEDIATA)
   // ==========================================================
 
-  static Future<void> _hablarCompleto(String mensaje) async {
-    try {
-      final completer = Completer<void>();
+  static Future<void> _hablarCompleto(String mensaje, int ciclo) async {
+    if (ciclo != _ciclo) return;
 
-      void completar() {
-        if (!completer.isCompleted) {
-          completer.complete();
-        }
+    final completer = Completer<void>();
+    _completerVozActual = completer;
+
+    void completar() {
+      if (!completer.isCompleted) {
+        completer.complete();
       }
+    }
 
-      _tts.setCompletionHandler(completar);
-      _tts.setCancelHandler(completar);
+    try {
+      _tts.setCompletionHandler(() {
+        if (_ciclo == ciclo) {
+          completar();
+        }
+      });
+      _tts.setCancelHandler(() {
+        completar();
+      });
       _tts.setErrorHandler((_) {
         completar();
       });
 
-      await _tts.stop();
+      if (ciclo != _ciclo) {
+        completar();
+        return;
+      }
 
       await _tts.speak(mensaje);
 
-      await completer.future;
-    } catch (_) {}
+      if (ciclo != _ciclo) {
+        try {
+          await _tts.stop();
+        } catch (_) {}
+        completar();
+        return;
+      }
+
+      await completer.future.timeout(
+        const Duration(seconds: 7),
+        onTimeout: () {
+          completar();
+        },
+      );
+    } catch (_) {
+      completar();
+    } finally {
+      if (_completerVozActual == completer) {
+        _completerVozActual = null;
+      }
+    }
   }
 
   // ==========================================================
-  // REPRODUCIR SONIDO COMPLETO
+  // REPRODUCIR SONIDO COMPLETO (CON PREEMCIÓN INMEDIATA)
   // ==========================================================
 
-  static Future<void> _reproducirSonidoCompleto() async {
+  static Future<void> _reproducirSonidoCompleto(int ciclo) async {
+    if (ciclo != _ciclo) return;
+
+    final completer = Completer<void>();
+    _completerAudioActual = completer;
+
+    StreamSubscription? subscription;
+
+    void completar() {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    }
+
     try {
-      final completer = Completer<void>();
-
-      late StreamSubscription subscription;
-
       subscription = _audioPlayer.onPlayerComplete.listen((_) {
-        if (!completer.isCompleted) {
-          completer.complete();
+        if (_ciclo == ciclo) {
+          completar();
         }
       });
 
-      await _audioPlayer.stop();
+      if (ciclo != _ciclo) {
+        completar();
+        return;
+      }
 
       await _audioPlayer.play(
         AssetSource('audio/alerta_epp.mp3'),
       );
 
-      await completer.future;
+      if (ciclo != _ciclo) {
+        try {
+          await _audioPlayer.stop();
+        } catch (_) {}
+        completar();
+        return;
+      }
 
-      await subscription.cancel();
-    } catch (_) {}
+      await completer.future.timeout(
+        const Duration(seconds: 4),
+        onTimeout: () {
+          completar();
+        },
+      );
+    } catch (_) {
+      completar();
+    } finally {
+      try {
+        await subscription?.cancel();
+      } catch (_) {}
+      if (_completerAudioActual == completer) {
+        _completerAudioActual = null;
+      }
+    }
   }
 
   // ==========================================================
@@ -156,7 +222,7 @@ class AlertService {
   }
 
   // ==========================================================
-  // ACTUALIZAR TODOS LOS ESTADOS
+  // ACTUALIZAR TODOS LOS ESTADOS (LATEST EVENT WINS)
   // ==========================================================
 
   static Future<void> actualizarEstado({
@@ -172,6 +238,8 @@ class AlertService {
     final anteriorDesconectados =
     Set<String>.from(_desconectadosActuales);
 
+    final bool anteriorCentralDesconectada = _centralDesconectadaActual;
+
     final nuevosRetirados =
     Set<String>.from(retirados);
 
@@ -180,12 +248,16 @@ class AlertService {
 
     // ========================================================
     // ¿CAMBIÓ ALGO?
+    // Solo generamos nuevas alertas cuando existe una TRANSICIÓN real.
+    // Si el estado permanece igual, NO recreamos el ciclo; el ciclo
+    // repetitivo activo continúa su marcha de forma ininterrumpida.
     // ========================================================
 
-    if (_mismosElementos(
-      anteriorRetirados,
-      nuevosRetirados,
-    ) &&
+    if (anteriorCentralDesconectada == centralDesconectada &&
+        _mismosElementos(
+          anteriorRetirados,
+          nuevosRetirados,
+        ) &&
         _mismosElementos(
           anteriorDesconectados,
           nuevosDesconectados,
@@ -194,14 +266,26 @@ class AlertService {
     }
 
     // ========================================================
-    // INVALIDAR CICLO ANTERIOR
+    // INTERRUPCIÓN INMEDIATA (LATEST EVENT WINS)
+    // 1. Desbloquear y resolver inmediatamente Completers activos
+    // 2. Incrementar _ciclo para invalidar la alerta/bucle anterior
+    // 3. Detener hardware TTS y AudioPlayer
     // ========================================================
 
-    _ciclo++;
+    final Completer<void>? completerVozViejo = _completerVozActual;
+    final Completer<void>? completerAudioViejo = _completerAudioActual;
 
-    final int cicloActual = _ciclo;
+    _completerVozActual = null;
+    _completerAudioActual = null;
 
-    _alertaActiva = false;
+    if (completerVozViejo != null && !completerVozViejo.isCompleted) {
+      completerVozViejo.complete();
+    }
+    if (completerAudioViejo != null && !completerAudioViejo.isCompleted) {
+      completerAudioViejo.complete();
+    }
+
+    final int cicloActual = ++_ciclo;
 
     try {
       await _audioPlayer.stop();
@@ -211,29 +295,28 @@ class AlertService {
       await _tts.stop();
     } catch (_) {}
 
+    // Si durante el stop llegó otra transición más reciente, salir
+    if (cicloActual != _ciclo) {
+      return;
+    }
+
     // ========================================================
     // ACTUALIZAR ESTADOS
     // ========================================================
 
     _retiradosActuales = nuevosRetirados;
     _desconectadosActuales = nuevosDesconectados;
+    _centralDesconectadaActual = centralDesconectada;
 
     // ========================================================
-    // CASO ESPECIAL:
+    // CASO ESPECIAL 1:
     // CASCO DESCONECTADO = SISTEMA COMPLETO DESCONECTADO
+    // Problema crítico persistente: VOZ -> ALARMA -> VOZ -> ALARMA...
     // ========================================================
 
     if (centralDesconectada) {
-      _alertaActiva = true;
-
       const mensajeCentral =
           'Sistema EPP desconectado por completo.';
-
-      await _hablarCompleto(mensajeCentral);
-
-      if (!_puedeContinuar(cicloActual)) {
-        return;
-      }
 
       await showNotification(
         id: 500,
@@ -241,220 +324,183 @@ class AlertService {
         body: mensajeCentral,
       );
 
-      unawaited(
-        _ejecutarCiclo(
-          cicloActual,
-          mensajeCentral,
-        ),
-      );
+      // Lanzar ciclo repetitivo en segundo plano (VOZ -> ALARMA -> VOZ -> ALARMA...)
+      unawaited(_ejecutarCicloProblema(
+        mensaje: mensajeCentral,
+        ciclo: cicloActual,
+      ));
 
       return;
     }
 
     // ========================================================
-    // DETECTAR CAMBIOS
+    // CASO ESPECIAL 2:
+    // CASCO SE RECONECTÓ (ESTABA DESCONECTADO Y AHORA NO)
     // ========================================================
 
-    final List<String> conectados = [];
+    final bool cascoSeReconecto = anteriorCentralDesconectada && !centralDesconectada;
 
-    final List<String> nuevosRetiradosDetectados = [];
+    // ========================================================
+    // DETECTAR RECUPERACIONES (PUESTO O CONECTADO)
+    // ========================================================
 
-    final List<String> nuevosDesconectadosDetectados = [];
+    final List<String> recuperadosColocados = [];
+    final List<String> recuperadosConectados = [];
 
-    // --------------------------------------------------------
-    // EQUIPOS QUE ESTABAN RETIRADOS Y YA NO
-    // --------------------------------------------------------
-
+    // EQUIPOS QUE ESTABAN RETIRADOS Y YA NO LO ESTÁN NI ESTÁN DESCONECTADOS
     for (final equipo in anteriorRetirados) {
       if (!nuevosRetirados.contains(equipo) &&
           !nuevosDesconectados.contains(equipo)) {
-        conectados.add(equipo);
+        recuperadosColocados.add(equipo);
       }
     }
 
-    // --------------------------------------------------------
-    // EQUIPOS QUE ESTABAN DESCONECTADOS Y YA NO
-    // --------------------------------------------------------
-
+    // EQUIPOS QUE ESTABAN DESCONECTADOS Y AHORA ESTÁN CONECTADOS
     for (final equipo in anteriorDesconectados) {
-      if (!nuevosDesconectados.contains(equipo) &&
-          !nuevosRetirados.contains(equipo) &&
-          !conectados.contains(equipo)) {
-        conectados.add(equipo);
-      }
-    }
-
-    // --------------------------------------------------------
-    // NUEVOS RETIRADOS
-    // --------------------------------------------------------
-
-    for (final equipo in nuevosRetirados) {
-      if (!anteriorRetirados.contains(equipo)) {
-        nuevosRetiradosDetectados.add(equipo);
-      }
-    }
-
-    // --------------------------------------------------------
-    // NUEVOS DESCONECTADOS
-    // --------------------------------------------------------
-
-    for (final equipo in nuevosDesconectados) {
-      if (!anteriorDesconectados.contains(equipo)) {
-        nuevosDesconectadosDetectados.add(equipo);
+      if (!nuevosDesconectados.contains(equipo)) {
+        if (!nuevosRetirados.contains(equipo) &&
+            !recuperadosColocados.contains(equipo)) {
+          recuperadosConectados.add(equipo);
+        }
       }
     }
 
     // ========================================================
-    // TODO CORRECTO
+    // ESCENARIO A: RECUPERACIÓN TOTAL (EPP COMPLETO Y CONECTADO)
+    // Sin problemas pendientes. Anuncio UNA SOLA VEZ y silencio.
     // ========================================================
 
-    if (nuevosRetirados.isEmpty &&
-        nuevosDesconectados.isEmpty) {
-      _alertaActiva = false;
+    if (nuevosRetirados.isEmpty && nuevosDesconectados.isEmpty) {
+      final List<String> partesRecuperacion = [];
 
-      if (conectados.isNotEmpty) {
-        await _hablarCompleto(
-          '${_crearMensajeColocados(conectados)} '
-              'Todos los equipos de protección están '
-              'colocados y conectados.',
-        );
+      if (cascoSeReconecto) {
+        partesRecuperacion.add('Sistema conectado.');
+      }
+
+      if (recuperadosColocados.isNotEmpty) {
+        partesRecuperacion.add(_crearMensajeColocados(recuperadosColocados));
+      }
+
+      if (recuperadosConectados.isNotEmpty) {
+        partesRecuperacion.add(_crearMensajeReconectados(recuperadosConectados));
+      }
+
+      final String mensajeTodoBien;
+      if (partesRecuperacion.isNotEmpty) {
+        mensajeTodoBien =
+            '${partesRecuperacion.join(' ')} Todos los equipos de protección están colocados y conectados.';
       } else {
-        await _hablarCompleto(
-          'Todos los equipos de protección están '
-              'colocados y conectados.',
-        );
+        mensajeTodoBien =
+            'Todos los equipos de protección están colocados y conectados.';
       }
 
+      await showNotification(
+        id: 500,
+        title: '✅ EPP COMPLETO',
+        body: mensajeTodoBien,
+      );
+
+      if (!_puedeContinuar(cicloActual)) {
+        return;
+      }
+
+      // ANUNCIO ÚNICO: VOZ UNA VEZ, LUEGO SILENCIO
+      await _hablarCompleto(mensajeTodoBien, cicloActual);
       return;
     }
 
     // ========================================================
-    // HAY INCIDENCIAS
+    // ESCENARIO B: EXISTEN PROBLEMAS ACTIVOS (RETIRADO O DESCONECTADO)
     // ========================================================
 
-    _alertaActiva = true;
-
-    // ========================================================
-    // PRIMERO: DECIR QUÉ SE SOLUCIONÓ
-    // ========================================================
-
-    if (conectados.isNotEmpty) {
-      await _hablarCompleto(
-        _crearMensajeColocados(conectados),
-      );
-
-      if (!_puedeContinuar(cicloActual)) {
-        return;
-      }
+    // Si hubo alguna recuperación puntual simultánea, anunciarla primero una vez
+    final List<String> frasesRecuperacionPuntual = [];
+    if (cascoSeReconecto) {
+      frasesRecuperacionPuntual.add('Sistema conectado.');
+    }
+    if (recuperadosColocados.isNotEmpty) {
+      frasesRecuperacionPuntual.add(_crearMensajeColocados(recuperadosColocados));
+    }
+    if (recuperadosConectados.isNotEmpty) {
+      frasesRecuperacionPuntual.add(_crearMensajeReconectados(recuperadosConectados));
     }
 
-    // ========================================================
-    // SEGUNDO: DECIR NUEVOS RETIRADOS
-    // ========================================================
+    // Mensaje representativo del ESTADO PROBLEMÁTICO ACTUAL
+    final String mensajeProblemaActual = _crearMensajeEstadoActual();
 
-    if (nuevosRetiradosDetectados.isNotEmpty) {
-      await _hablarCompleto(
-        _crearMensajeRetirados(
-          nuevosRetiradosDetectados,
-        ),
-      );
-
-      if (!_puedeContinuar(cicloActual)) {
-        return;
-      }
+    final List<String> frasesIniciales = [];
+    if (frasesRecuperacionPuntual.isNotEmpty) {
+      frasesIniciales.addAll(frasesRecuperacionPuntual);
+    }
+    if (mensajeProblemaActual.isNotEmpty) {
+      frasesIniciales.add(mensajeProblemaActual);
     }
 
-    // ========================================================
-    // TERCERO: DECIR NUEVOS DESCONECTADOS
-    // ========================================================
+    final String mensajeAlertaInicial = frasesIniciales.join(' ');
 
-    if (nuevosDesconectadosDetectados.isNotEmpty) {
-      await _hablarCompleto(
-        _crearMensajeDesconectados(
-          nuevosDesconectadosDetectados,
-        ),
-      );
-
-      if (!_puedeContinuar(cicloActual)) {
-        return;
-      }
+    if (mensajeAlertaInicial.isEmpty) {
+      return;
     }
 
-    // ========================================================
-    // MENSAJE COMPLETO DE LA SITUACIÓN ACTUAL
-    // ========================================================
-
-    final mensajeActual =
-    _crearMensajeEstadoActual();
-
-    if (mensajeActual.isNotEmpty) {
-      await _hablarCompleto(mensajeActual);
-
-      if (!_puedeContinuar(cicloActual)) {
-        return;
-      }
-    }
-
-    // ========================================================
-    // NOTIFICACIÓN
-    // ========================================================
-
+    // Mostrar notificación del evento
     await showNotification(
       id: 500,
       title: '🚨 ALERTA EPP',
-      body: mensajeActual,
+      body: mensajeAlertaInicial,
     );
 
-    // ========================================================
-    // COMENZAR CICLO
-    // ========================================================
-
-    unawaited(
-      _ejecutarCiclo(
-        cicloActual,
-        mensajeActual,
-      ),
-    );
+    // Lanzar ciclo repetitivo en segundo plano (VOZ -> ALARMA -> VOZ -> ALARMA...)
+    // La primera locución puede incluir la recuperación puntual si la hubo,
+    // y los ciclos subsiguientes repetirán el estado problemático actual.
+    unawaited(_ejecutarCicloProblema(
+      mensaje: mensajeProblemaActual.isNotEmpty ? mensajeProblemaActual : mensajeAlertaInicial,
+      mensajeInicial: mensajeAlertaInicial,
+      ciclo: cicloActual,
+    ));
   }
 
   // ==========================================================
-  // CICLO DE ALARMA
-  //
-  // VOZ → ALARMA → VOZ → ALARMA...
+  // BUCLE REPETITIVO DE PROBLEMAS (VOZ -> ALARMA -> VOZ -> ALARMA)
+  // Se ejecuta indefinidamente mientras el problema persista
+  // y hasta que una nueva transición incremente _ciclo.
   // ==========================================================
 
-  static Future<void> _ejecutarCiclo(
-      int cicloActual,
-      String mensaje,
-      ) async {
-    while (_puedeContinuar(cicloActual)) {
+  static Future<void> _ejecutarCicloProblema({
+    required String mensaje,
+    String? mensajeInicial,
+    required int ciclo,
+  }) async {
+    bool primerPaso = true;
 
-      // ======================================================
-      // SONIDO
-      // ======================================================
+    while (_puedeContinuar(ciclo)) {
+      final String textoAHablar = (primerPaso && mensajeInicial != null)
+          ? mensajeInicial
+          : mensaje;
+      primerPaso = false;
 
-      await _reproducirSonidoCompleto();
+      // 1. PRIMERO SIEMPRE VA LA VOZ
+      await _hablarCompleto(textoAHablar, ciclo);
 
-      if (!_puedeContinuar(cicloActual)) {
+      if (!_puedeContinuar(ciclo)) {
         break;
       }
 
-      // ======================================================
-      // VOZ
-      // ======================================================
+      // Pequeña pausa de inteligibilidad (500 ms)
+      await Future<void>.delayed(const Duration(milliseconds: 500));
 
-      final mensajeActual =
-      _crearMensajeEstadoActual();
-
-      if (mensajeActual.isEmpty) {
+      if (!_puedeContinuar(ciclo)) {
         break;
       }
 
-      await _hablarCompleto(mensajeActual);
+      // 2. DESPUÉS VA LA ALARMA
+      await _reproducirSonidoCompleto(ciclo);
 
-      if (!_puedeContinuar(cicloActual)) {
+      if (!_puedeContinuar(ciclo)) {
         break;
       }
+
+      // Pequeña pausa antes de volver a repetir la voz (1 segundo)
+      await Future<void>.delayed(const Duration(seconds: 1));
     }
   }
 
@@ -464,10 +510,7 @@ class AlertService {
 
   static bool _puedeContinuar(
       int cicloActual) {
-    return _alertaActiva &&
-        _ciclo == cicloActual &&
-        (_retiradosActuales.isNotEmpty ||
-            _desconectadosActuales.isNotEmpty);
+    return _ciclo == cicloActual;
   }
 
   // ==========================================================
@@ -553,7 +596,7 @@ class AlertService {
   }
 
   // ==========================================================
-  // MENSAJE COLOCADOS / CONECTADOS
+  // MENSAJE COLOCADOS
   // ==========================================================
 
   static String _crearMensajeColocados(
@@ -566,18 +609,46 @@ class AlertService {
     final nombres = List<String>.from(lista);
 
     if (nombres.length == 1) {
-      return '${nombres[0]} colocado y conectado.';
+      return '${nombres[0]} colocado.';
     }
 
     if (nombres.length == 2) {
       return '${nombres[0]} y '
-          '${nombres[1]} colocados y conectados.';
+          '${nombres[1]} colocados.';
     }
 
     final ultimo = nombres.removeLast();
 
     return '${nombres.join(', ')} '
-        'y $ultimo colocados y conectados.';
+        'y $ultimo colocados.';
+  }
+
+  // ==========================================================
+  // MENSAJE RECONECTADOS
+  // ==========================================================
+
+  static String _crearMensajeReconectados(
+      List<String> lista) {
+
+    if (lista.isEmpty) {
+      return '';
+    }
+
+    final nombres = List<String>.from(lista);
+
+    if (nombres.length == 1) {
+      return '${nombres[0]} conectado.';
+    }
+
+    if (nombres.length == 2) {
+      return '${nombres[0]} y '
+          '${nombres[1]} conectados.';
+    }
+
+    final ultimo = nombres.removeLast();
+
+    return '${nombres.join(', ')} '
+        'y $ultimo conectados.';
   }
 
   // ==========================================================
@@ -600,12 +671,24 @@ class AlertService {
   // ==========================================================
 
   static Future<void> detenerAlertas() async {
-    _ciclo++;
+    final Completer<void>? completerVozViejo = _completerVozActual;
+    final Completer<void>? completerAudioViejo = _completerAudioActual;
 
-    _alertaActiva = false;
+    _completerVozActual = null;
+    _completerAudioActual = null;
+
+    if (completerVozViejo != null && !completerVozViejo.isCompleted) {
+      completerVozViejo.complete();
+    }
+    if (completerAudioViejo != null && !completerAudioViejo.isCompleted) {
+      completerAudioViejo.complete();
+    }
+
+    _ciclo++;
 
     _retiradosActuales.clear();
     _desconectadosActuales.clear();
+    _centralDesconectadaActual = false;
 
     try {
       await _audioPlayer.stop();
@@ -634,8 +717,10 @@ class AlertService {
   }) async {
     await initialize();
 
-    await _hablarCompleto(body);
+    final int cicloActual = ++_ciclo;
 
-    await _reproducirSonidoCompleto();
+    await _hablarCompleto(body, cicloActual);
+
+    await _reproducirSonidoCompleto(cicloActual);
   }
 }

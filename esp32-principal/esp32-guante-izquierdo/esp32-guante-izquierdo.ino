@@ -3,7 +3,7 @@
 
 // ==========================================================
 // SAFE VISION EPP
-// ESP32-C3 - GUANTE DERECHO
+// ESP32-C3 - GUANTE IZQUIERDO
 // ==========================================================
 
 const char* WIFI_SSID = "SAFEVISION_EPP";
@@ -22,14 +22,14 @@ const char* WIFI_PASSWORD = "SafeVision123";
 // ==========================================================
 
 // ==========================================================
-// IP FIJA DEL GUANTE DERECHO
+// IP FIJA DEL GUANTE IZQUIERDO
 // ==========================================================
 
 IPAddress IP_GUANTE(
   192,
   168,
   4,
-  12
+  13
 );
 
 // ==========================================================
@@ -162,7 +162,7 @@ void manejarEstado()
   String json = "{";
 
   json +=
-    "\"epp\":\"GUANTE_DERECHO\",";
+    "\"epp\":\"GUANTE_IZQUIERDO\",";
 
   json +=
     "\"estado\":\"" +
@@ -205,7 +205,7 @@ void manejarEstado()
   );
 
   Serial.println(
-    "SOLICITUD /estado - GUANTE DERECHO"
+    "SOLICITUD /estado - GUANTE IZQUIERDO"
   );
 
   Serial.println(
@@ -229,7 +229,7 @@ void manejarEstado()
   );
 
   Serial.print(
-    "GUANTE DERECHO: "
+    "GUANTE IZQUIERDO: "
   );
 
   Serial.println(
@@ -258,11 +258,11 @@ void manejarPing()
   server.send(
     200,
     "application/json",
-    "{\"ok\":true,\"epp\":\"GUANTE_DERECHO\"}"
+    "{\"ok\":true,\"epp\":\"GUANTE_IZQUIERDO\"}"
   );
 
   Serial.println(
-    "PING RECIBIDO - GUANTE DERECHO"
+    "PING RECIBIDO - GUANTE IZQUIERDO"
   );
 }
 
@@ -276,10 +276,10 @@ void manejarInicio()
     "<h1>SAFE VISION EPP</h1>";
 
   html +=
-    "<h2>GUANTE DERECHO</h2>";
+    "<h2>GUANTE IZQUIERDO</h2>";
 
   html +=
-    "<p>IP: 192.168.4.12</p>";
+    "<p>IP: 192.168.4.13</p>";
 
   html +=
     "<p>GPIO SENSOR: 2</p>";
@@ -350,7 +350,7 @@ void iniciarServidor()
   );
 
   Serial.println(
-    "SERVIDOR GUANTE DERECHO INICIADO"
+    "SERVIDOR GUANTE IZQUIERDO INICIADO"
   );
 
   Serial.println(
@@ -358,15 +358,15 @@ void iniciarServidor()
   );
 
   Serial.println(
-    "IP: http://192.168.4.12"
+    "IP: http://192.168.4.13"
   );
 
   Serial.println(
-    "ESTADO: http://192.168.4.12/estado"
+    "ESTADO: http://192.168.4.13/estado"
   );
 
   Serial.println(
-    "PING: http://192.168.4.12/ping"
+    "PING: http://192.168.4.13/ping"
   );
 
   Serial.println(
@@ -402,7 +402,7 @@ void eventoWiFi(
       );
 
       Serial.println(
-        "[WIFI] GUANTE DERECHO ASOCIADO AL CASCO"
+        "[WIFI] GUANTE IZQUIERDO ASOCIADO AL CASCO"
       );
 
       Serial.println(
@@ -450,7 +450,7 @@ void eventoWiFi(
       );
 
       Serial.println(
-        "[WIFI] GUANTE DERECHO DESCONECTADO"
+        "[WIFI] GUANTE IZQUIERDO DESCONECTADO"
       );
 
       Serial.print(
@@ -501,7 +501,7 @@ void conectarWiFi()
   );
 
   Serial.println(
-    "GUANTE DERECHO"
+    "GUANTE IZQUIERDO"
   );
 
   Serial.println(
@@ -522,9 +522,8 @@ void conectarWiFi()
   // IMPORTANTE - ESP32-C3 SUPER MINI
   // ========================================================
   //
-  // Esta potencia es la misma configuración utilizada
-  // para conectar correctamente los ESP32-C3
-  // al punto de acceso del CASCO.
+  // Misma potencia utilizada por los otros ESP32-C3
+  // para conectarse correctamente al CASCO.
   //
   // ========================================================
 
@@ -551,7 +550,7 @@ void conectarWiFi()
   if (configurado)
   {
     Serial.println(
-      "IP FIJA CONFIGURADA: 192.168.4.12"
+      "IP FIJA CONFIGURADA: 192.168.4.13"
     );
   }
   else
@@ -623,7 +622,7 @@ void conectarWiFi()
     );
 
     Serial.println(
-      "GUANTE DERECHO"
+      "GUANTE IZQUIERDO"
     );
 
     Serial.println(
@@ -735,7 +734,7 @@ void setup()
   );
 
   Serial.println(
-    "SENSOR BROCHE - GUANTE DERECHO"
+    "SENSOR BROCHE - GUANTE IZQUIERDO"
   );
 
   Serial.println(
@@ -759,21 +758,21 @@ void setup()
   )
   {
     Serial.println(
-      "GUANTE DERECHO ABROCHADO"
+      "GUANTE IZQUIERDO ABROCHADO"
     );
 
     Serial.println(
-      "GUANTE DERECHO: PUESTO"
+      "GUANTE IZQUIERDO: PUESTO"
     );
   }
   else
   {
     Serial.println(
-      "GUANTE DERECHO DESABROCHADO"
+      "GUANTE IZQUIERDO DESABROCHADO"
     );
 
     Serial.println(
-      "GUANTE DERECHO: RETIRADO"
+      "GUANTE IZQUIERDO: RETIRADO"
     );
   }
 
@@ -834,11 +833,16 @@ void loop()
         "INTENTANDO RECONECTAR AL CASCO..."
       );
 
+      // ====================================================
+      // RECONEXION COMPLETA
+      // ====================================================
+
       WiFi.disconnect();
 
       delay(300);
 
-      // Volver a establecer IP fija
+      // Volvemos a colocar la IP fija del
+      // GUANTE IZQUIERDO antes de conectar.
       WiFi.config(
         IP_GUANTE,
         GATEWAY,
@@ -854,7 +858,7 @@ void loop()
   }
 
   // ========================================================
-  // LEER BROCHE
+  // LEER SENSOR DEL BROCHE
   // ========================================================
 
   int lectura =
@@ -870,7 +874,10 @@ void loop()
     lectura != ultimoEstado
   )
   {
-    // Antirrebote
+    // ======================================================
+    // ANTIRREBOTE
+    // ======================================================
+
     delay(30);
 
     lectura =
@@ -892,7 +899,7 @@ void loop()
       );
 
       Serial.println(
-        "CAMBIO DETECTADO EN GUANTE DERECHO"
+        "CAMBIO DETECTADO EN GUANTE IZQUIERDO"
       );
 
       Serial.println(
@@ -907,6 +914,10 @@ void loop()
         lectura
       );
 
+      // ====================================================
+      // GUANTE ABROCHADO
+      // ====================================================
+
       if (
         lectura == LOW
       )
@@ -916,13 +927,18 @@ void loop()
         );
 
         Serial.println(
-          "GUANTE DERECHO: PUESTO"
+          "GUANTE IZQUIERDO: PUESTO"
         );
 
         Serial.println(
           "ESTADO: EPP COLOCADO"
         );
       }
+
+      // ====================================================
+      // GUANTE DESABROCHADO
+      // ====================================================
+
       else
       {
         Serial.println(
@@ -930,7 +946,7 @@ void loop()
         );
 
         Serial.println(
-          "GUANTE DERECHO: RETIRADO"
+          "GUANTE IZQUIERDO: RETIRADO"
         );
 
         Serial.println(

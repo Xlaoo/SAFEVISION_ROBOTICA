@@ -20,6 +20,9 @@
 // GUANTE DERECHO:
 // 192.168.4.12
 //
+// GUANTE IZQUIERDO:
+// 192.168.4.13
+//
 // ==========================================================
 
 
@@ -474,6 +477,24 @@ void manejarEstado()
 
 
     // ======================================================
+    // GUANTE IZQUIERDO
+    // ======================================================
+
+    String estadoGuanteIzquierdo =
+        "DESCONOCIDO";
+
+    String conexionGuanteIzquierdo =
+        "DESCONECTADO";
+
+    consultarEpp(
+        "GUANTE IZQUIERDO",
+        "http://192.168.4.13/estado",
+        estadoGuanteIzquierdo,
+        conexionGuanteIzquierdo
+    );
+
+
+    // ======================================================
     // JSON COMPLETO PARA FLUTTER
     // ======================================================
 
@@ -566,6 +587,27 @@ void manejarEstado()
 
         "\"conexion\":\"" +
         conexionGuante +
+        "\","
+
+        "\"tipo\":\"SECUNDARIO\""
+
+        "},"
+
+
+        // --------------------------------------------------
+        // GUANTE IZQUIERDO
+        // --------------------------------------------------
+
+        "\"guante_izquierdo\":{"
+
+        "\"epp\":\"GUANTE_IZQUIERDO\","
+
+        "\"estado\":\"" +
+        estadoGuanteIzquierdo +
+        "\","
+
+        "\"conexion\":\"" +
+        conexionGuanteIzquierdo +
         "\","
 
         "\"tipo\":\"SECUNDARIO\""
@@ -694,6 +736,10 @@ LENTES: 192.168.4.11
 
 <p>
 GUANTE DERECHO: 192.168.4.12
+</p>
+
+<p>
+GUANTE IZQUIERDO: 192.168.4.13
 </p>
 
 <p>

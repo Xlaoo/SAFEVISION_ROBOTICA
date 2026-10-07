@@ -242,26 +242,40 @@ class Esp32Service {
       // GUANTE IZQUIERDO
       // ========================================================
 
-      if (respuesta['guanteIzquierdo'] is Map) {
+      final dynamic rawGuanteIzquierdo =
+          respuesta['guante_izquierdo'] ?? respuesta['guanteIzquierdo'];
 
-        resultado['guanteIzquierdo'] =
+      if (rawGuanteIzquierdo is Map) {
+
+        final Map<String, dynamic> guanteIzquierdo =
         Map<String, dynamic>.from(
-          respuesta['guanteIzquierdo'],
+          rawGuanteIzquierdo,
         );
+
+        final String estadoGuante =
+            guanteIzquierdo['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
+
+        final String conexionGuanteRaw =
+            guanteIzquierdo['conexion']?.toString().trim().toUpperCase() ?? '';
+
+        final bool conectadoGuante =
+            guanteIzquierdo['conectado'] == true ||
+            conexionGuanteRaw == 'CONECTADO';
+
+        guanteIzquierdo['conexion'] =
+            conectadoGuante ? 'CONECTADO' : 'DESCONECTADO';
+
+        guanteIzquierdo['estado'] = estadoGuante;
+
+        guanteIzquierdo['tipo'] = 'SECUNDARIO';
+
+        resultado['guante_izquierdo'] = guanteIzquierdo;
+        resultado['guanteIzquierdo'] = guanteIzquierdo;
 
       } else {
 
-        resultado['guanteIzquierdo'] = {
-
-          'estado':
-          'DESCONOCIDO',
-
-          'conexion':
-          'DESCONECTADO',
-
-          'tipo':
-          'SECUNDARIO',
-        };
+        resultado['guante_izquierdo'] = null;
+        resultado['guanteIzquierdo'] = null;
       }
 
 
@@ -409,6 +423,11 @@ class Esp32Service {
       print(
         'CHALECO: '
             '${resultado['chaleco']}',
+      );
+
+      print(
+        'GUANTE IZQUIERDO: '
+            '${resultado['guante_izquierdo']}',
       );
 
       print(
