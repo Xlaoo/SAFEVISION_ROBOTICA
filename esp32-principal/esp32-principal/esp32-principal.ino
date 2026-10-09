@@ -212,11 +212,11 @@ bool consultarEpp(
     HTTPClient http;
 
     http.setConnectTimeout(
-        500
+        150
     );
 
     http.setTimeout(
-        700
+        250
     );
 
 
@@ -1152,6 +1152,6 @@ void loop()
 
 
     delay(
-        50
+        10
     );
 }

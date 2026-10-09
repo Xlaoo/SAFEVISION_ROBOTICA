@@ -107,6 +107,8 @@ const int LIMITE_LENTES_MM = 50;
 Adafruit_VL53L0X sensor =
     Adafruit_VL53L0X();
 
+bool sensorIniciado = false;
+
 
 // ==========================================================
 // SERVIDOR
@@ -139,52 +141,44 @@ int distanciaMM = -1;
 
 int leerDistancia()
 {
+    if (!sensorIniciado)
+    {
+        static unsigned long ultimoReintentoSensor = 0;
+        if (millis() - ultimoReintentoSensor > 3000)
+        {
+            ultimoReintentoSensor = millis();
+            sensorIniciado = sensor.begin();
+        }
+        if (!sensorIniciado)
+        {
+            return -1;
+        }
+    }
+
     VL53L0X_RangingMeasurementData_t medida;
-
     long suma = 0;
-
     int validas = 0;
 
-
-    // ======================================================
-    // 5 LECTURAS
-    // ======================================================
-
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 2; i++)
     {
         sensor.rangingTest(
             &medida,
             false
         );
 
-
-        // RangeStatus 4 significa fuera de rango
-        if (medida.RangeStatus != 4)
+        if (medida.RangeStatus != 4 && medida.RangeMilliMeter > 0 && medida.RangeMilliMeter < 2000)
         {
             suma +=
                 medida.RangeMilliMeter;
 
             validas++;
         }
-
-
-        delay(15);
     }
-
-
-    // ======================================================
-    // SIN LECTURA
-    // ======================================================
 
     if (validas == 0)
     {
         return -1;
     }
-
-
-    // ======================================================
-    // PROMEDIO
-    // ======================================================
 
     return suma / validas;
 }
@@ -323,9 +317,6 @@ void mostrarEstado()
 
 void manejarEstado()
 {
-    actualizarEstado();
-
-
     float distanciaCM =
         -1;
 
@@ -527,7 +518,9 @@ void conectarWiFi()
     WiFi.mode(
         WIFI_STA
     );
-    delay(500);
+    WiFi.setAutoReconnect(true);
+    WiFi.setSleep(false);
+    delay(100);
 // IMPORTANTE PARA ESP32-C3 SUPER MINI
 // Misma configuración que permitió conectar
 // CHALECO y GUANTE al CASCO.
@@ -565,30 +558,38 @@ WiFi.setTxPower(WIFI_POWER_8_5dBm);
     // CONECTAR
     // ======================================================
 
+    Serial.print("[WIFI] Inicio WiFi.begin a millis: ");
+    Serial.println(millis());
+
     WiFi.begin(
         WIFI_SSID,
         WIFI_PASSWORD
     );
 
-
     int intentos = 0;
 
-
+    // Verificación rápida cada 100 ms (hasta 150 intentos = 15 s timeout máximo)
     while (
         WiFi.status() != WL_CONNECTED
         &&
-        intentos < 30
+        intentos < 150
     )
     {
-        delay(500);
+        delay(100);
 
-        Serial.print(".");
+        if (intentos % 10 == 0)
+        {
+            Serial.print(".");
+        }
 
         intentos++;
     }
 
-
     Serial.println();
+    Serial.print("[WIFI] Fin conexion a millis: ");
+    Serial.print(millis());
+    Serial.print(" | Intentos (x100ms): ");
+    Serial.println(intentos);
 
 
     // ======================================================
@@ -600,6 +601,8 @@ WiFi.setTxPower(WIFI_POWER_8_5dBm);
         WL_CONNECTED
     )
     {
+        Serial.print("[WIFI] Confirmado WL_CONNECTED a millis: ");
+        Serial.println(millis());
         Serial.println();
 
         Serial.println(
@@ -687,8 +690,9 @@ void iniciarServidor()
 
     server.begin();
 
-
     Serial.println();
+    Serial.print("[HTTP] Servidor iniciado a millis: ");
+    Serial.println(millis());
 
     Serial.println(
         "========================================"
@@ -732,12 +736,11 @@ void setup()
         115200
     );
 
-
-    delay(2000);
-
+    delay(200);
 
     Serial.println();
-
+    Serial.print("[BOOT LENTES] Inicio setup a millis: ");
+    Serial.println(millis());
     Serial.println(
         "========================================"
     );
@@ -769,53 +772,29 @@ void setup()
         "BUSCANDO VL53L0X..."
     );
 
-
-    if (!sensor.begin())
+    int reintentosSensor = 0;
+    while (!sensorIniciado && reintentosSensor < 3)
     {
-        Serial.println();
-
-        Serial.println(
-            "❌ ERROR"
-        );
-
-        Serial.println(
-            "VL53L0X NO DETECTADO"
-        );
-
-        Serial.println();
-
-        Serial.println(
-            "REVISA:"
-        );
-
-        Serial.println(
-            "VCC -> 3.3V"
-        );
-
-        Serial.println(
-            "GND -> GND"
-        );
-
-        Serial.println(
-            "SDA -> GPIO 6"
-        );
-
-        Serial.println(
-            "SCL -> GPIO 7"
-        );
-
-
-        while (true)
+        sensorIniciado = sensor.begin();
+        if (!sensorIniciado)
         {
-            delay(1000);
+            delay(100);
+            reintentosSensor++;
         }
     }
 
-
-    Serial.println(
-        "✅ VL53L0X DETECTADO"
-    );
-
+    if (sensorIniciado)
+    {
+        Serial.println(
+            "✅ VL53L0X DETECTADO"
+        );
+    }
+    else
+    {
+        Serial.println(
+            "⚠️ VL53L0X NO DETECTADO EN BOOT. CONTINUANDO..."
+        );
+    }
 
     // ======================================================
     // WIFI
@@ -828,13 +807,7 @@ void setup()
     // SERVIDOR
     // ======================================================
 
-    if (
-        WiFi.status() ==
-        WL_CONNECTED
-    )
-    {
-        iniciarServidor();
-    }
+    iniciarServidor();
 
 
     // ======================================================
@@ -911,7 +884,7 @@ void loop()
 
 
     // ======================================================
-    // RECONEXION WIFI
+    // RECONEXION WIFI CONTROLADA NO BLOQUEANTE
     // ======================================================
 
     if (
@@ -933,36 +906,12 @@ void loop()
                 millis();
 
 
-            Serial.println(
-                "WIFI DESCONECTADO"
-            );
+            Serial.println();
+            Serial.print("[WIFI] RECONECTANDO LENTES AL CASCO... millis: ");
+            Serial.println(millis());
 
-            Serial.println(
-                "RECONECTANDO..."
-            );
-
-
-            WiFi.disconnect();
-
-
-            delay(300);
-
-
-            WiFi.config(
-                IP_LENTES,
-                GATEWAY,
-                SUBNET,
-                DNS
-            );
-
-
-            WiFi.begin(
-                WIFI_SSID,
-                WIFI_PASSWORD
-            );
+            WiFi.reconnect();
         }
     }
-
-
     delay(10);
 }

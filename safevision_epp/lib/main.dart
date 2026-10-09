@@ -4,11 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'services/alert_service.dart';
 import 'services/esp32_service.dart';
+import 'services/foreground_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await AlertService.initialize();
+  await ForegroundServiceManager.initialize();
 
   runApp(const SafeVisionEppApp());
 }
@@ -33,7 +35,9 @@ class SafeVisionEppApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: const Color(0xFFF4F7F8),
       ),
-      home: const DashboardPage(),
+      home: const WithForegroundTask(
+        child: DashboardPage(),
+      ),
     );
   }
 }
@@ -200,7 +204,8 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState
-    extends State<DashboardPage> {
+    extends State<DashboardPage>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
 
   // ==========================================================
   // URL DE NUESTRA API
@@ -233,6 +238,14 @@ class _DashboardPageState
   int _fallosConsecutivosLentes = 0;
   int _fallosConsecutivosGuanteDerecho = 0;
   int _fallosConsecutivosGuanteIzquierdo = 0;
+
+  // ==========================================================
+  // CONTROLES DE AUDIO Y RECARGA MANUAL
+  // ==========================================================
+  bool _actualizandoManual = false;
+  late final AnimationController _refreshAnimController;
+  bool _alarmaHabilitada = true;
+  bool _vozHabilitada = true;
 
 
 // ==========================================================
@@ -272,17 +285,25 @@ class _DashboardPageState
 // ==========================================================
 
   String _fechaContadores = '';
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _refreshAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
 
     horaActual = DateTime.now();
 
     _inicializarYActualizar();
+    ForegroundServiceManager.start();
 
-    // Actualizar datos de la API cada 3 segundos
+    // Actualizar datos de la API cada 2 segundos
     timer = Timer.periodic(
-      const Duration(seconds: 3),
+      const Duration(seconds: 2),
           (_) {
         actualizarDatos();
       },
@@ -303,23 +324,129 @@ class _DashboardPageState
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    ForegroundServiceManager.stop();
     timer?.cancel();
     relojTimer?.cancel();
+    _refreshAnimController.dispose();
     super.dispose();
   }
 
-  // ==========================================================
-  // CONSULTAR API
-  // ==========================================================
-// ==========================================================
-// PROCESAR ALERTAS DE SEGURIDAD
-// ==========================================================
-// ==========================================================
-// PROCESAR ALERTAS DE SEGURIDAD
-// ==========================================================
-  Future<void> _inicializarYActualizar() async {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      print('[SEGUNDO PLANO DEBUG] App reanudada (pantalla desbloqueada)');
+      if (!_consultaEnCurso) {
+        actualizarDatos();
+      }
+    } else if (state == AppLifecycleState.paused) {
+      print('[SEGUNDO PLANO DEBUG] App en segundo plano (pantalla apagada o bloqueada)');
+    }
+  }
 
+  // ==========================================================
+  // PREFERENCIAS DE AUDIO Y CONTROLADORES
+  // ==========================================================
+
+  Future<void> _cargarPreferenciasAudio() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _alarmaHabilitada = prefs.getBool('safevision_alarma_habilitada') ?? true;
+        _vozHabilitada = prefs.getBool('safevision_voz_habilitada') ?? true;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _toggleAlarma() async {
+    final nuevoEstado = !_alarmaHabilitada;
+    setState(() {
+      _alarmaHabilitada = nuevoEstado;
+    });
+    await AlertService.setAlarmaHabilitada(nuevoEstado);
+  }
+
+  Future<void> _toggleVoz() async {
+    final nuevoEstado = !_vozHabilitada;
+    setState(() {
+      _vozHabilitada = nuevoEstado;
+    });
+    await AlertService.setVozHabilitada(nuevoEstado);
+  }
+
+  // ==========================================================
+  // ACTUALIZACIÓN MANUAL (CON ANIMACIÓN Y DEBOUNCE)
+  // ==========================================================
+
+  Future<void> _actualizarManualmente() async {
+    // Evita consultas múltiples simultáneas si se presiona repetidamente
+    if (_consultaEnCurso || _actualizandoManual) {
+      return;
+    }
+
+    setState(() {
+      _actualizandoManual = true;
+    });
+    _refreshAnimController.repeat();
+
+    try {
+      await actualizarDatos();
+      if (!mounted) return;
+
+      // Si la consulta no logró conectar con el CASCO central, aviso discreto
+      if (!conectado && errorMensaje.isNotEmpty) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.wifi_off, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'No se pudo conectar con el CASCO central. Manteniendo último estado conocido.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: Color(0xFF991B1B),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Error al consultar el CASCO central'),
+            backgroundColor: Color(0xFF991B1B),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        _refreshAnimController.stop();
+        _refreshAnimController.reset();
+        setState(() {
+          _actualizandoManual = false;
+        });
+      }
+    }
+  }
+
+  // ==========================================================
+  // INICIALIZAR Y ACTUALIZAR
+  // ==========================================================
+  Future<void> _inicializarYActualizar() async {
     await _inicializarContadores();
+    await _cargarPreferenciasAudio();
 
     if (!mounted) {
       return;
@@ -401,6 +528,10 @@ class _DashboardPageState
         centralDesconectada: true,
       );
 
+      ForegroundServiceManager.updateNotification(
+        title: '🚨 SAFE VISION EPP - SISTEMA APAGADO',
+        text: 'La central CASCO perdió comunicación con el dispositivo.',
+      );
 
       return;
     }
@@ -459,12 +590,14 @@ class _DashboardPageState
     // LENTES
     // ==========================================================
 
+    final String eventoAlertaLentes;
     if (
     estado.lentes.conexion.toUpperCase() !=
         'CONECTADO'
     ) {
 
       desconectados.add('Lentes');
+      eventoAlertaLentes = 'DESCONECTADO';
 
     } else if (
     estado.lentes.estado.toUpperCase() ==
@@ -472,8 +605,13 @@ class _DashboardPageState
     ) {
 
       retirados.add('Lentes');
+      eventoAlertaLentes = 'RETIRADO';
 
+    } else {
+      eventoAlertaLentes = 'CORRECTO';
     }
+
+    print('[LENTES DEBUG] EVENTO ALERTA: $eventoAlertaLentes (Retirados: ${retirados.contains('Lentes')}, Desconectados: ${desconectados.contains('Lentes')})');
 
 
     // ==========================================================
@@ -588,6 +726,25 @@ class _DashboardPageState
 
       centralDesconectada: false,
     );
+
+    if (retirados.isNotEmpty || desconectados.isNotEmpty) {
+      final List<String> detalles = [];
+      if (retirados.isNotEmpty) {
+        detalles.add('Retirados: ${retirados.join(", ")}');
+      }
+      if (desconectados.isNotEmpty) {
+        detalles.add('Desconectados: ${desconectados.join(", ")}');
+      }
+      ForegroundServiceManager.updateNotification(
+        title: '⚠️ SAFE VISION EPP - ALERTA ACTIVA',
+        text: detalles.join(' | '),
+      );
+    } else {
+      ForegroundServiceManager.updateNotification(
+        title: '🛡️ SAFE VISION EPP - Monitoreo Activo',
+        text: 'Todos los equipos EPP conectados y colocados.',
+      );
+    }
   }
   // ==========================================================
 // ACTUALIZAR HISTORIAL DE INCIDENCIAS
@@ -1075,12 +1232,12 @@ class _DashboardPageState
         _fallosConsecutivosCasco++;
         print('');
         print('========================================');
-        print('⚠️ FALLO DE COMUNICACIÓN CON CASCO ($_fallosConsecutivosCasco/3)');
+        print('⚠️ FALLO DE COMUNICACIÓN CON CASCO ($_fallosConsecutivosCasco/2)');
         print('========================================');
 
-        // Si es un fallo transitorio (< 3 intentos) y ya teníamos datos válidos,
+        // Si es un fallo transitorio (< 2 intentos) y ya teníamos datos válidos,
         // no destruimos el estado en pantalla ni disparamos falsas alarmas.
-        if (_fallosConsecutivosCasco < 3 && datos != null) {
+        if (_fallosConsecutivosCasco < 2 && datos != null) {
           if (mounted) {
             setState(() {
               horaActual = DateTime.now();
@@ -1133,7 +1290,8 @@ class _DashboardPageState
               ),
         );
 
-        await _procesarContadores(estadoDesconectado);
+        _actualizarHistorialIncidencias(estadoDesconectado);
+        unawaited(_procesarAlertas(estadoDesconectado));
 
         setState(() {
           datos = estadoDesconectado;
@@ -1143,8 +1301,7 @@ class _DashboardPageState
           horaActual = DateTime.now();
         });
 
-        unawaited(_procesarAlertas(estadoDesconectado));
-        _actualizarHistorialIncidencias(estadoDesconectado);
+        unawaited(_procesarContadores(estadoDesconectado));
         return;
       }
 
@@ -1207,24 +1364,37 @@ class _DashboardPageState
         final bool chalecoEstaConectado = (datosChaleco['conectado'] == true ||
             conexionChalecoRaw == 'CONECTADO');
 
+        print('[CHALECO DEBUG] ESTADO RAW: "$estadoChalecoRaw" | CONEXIÓN: "$conexionChalecoRaw"');
+
         if (chalecoEstaConectado) {
           _fallosConsecutivosChaleco = 0;
+
+          final String estadoFinalChaleco;
+          if (estadoChalecoRaw.contains('RETIRADO')) {
+            // Lectura física válida del sensor: aplicar RETIRADO de inmediato
+            estadoFinalChaleco = 'RETIRADO';
+          } else if (estadoChalecoRaw.contains('PUESTO')) {
+            // Lectura física válida del sensor: aplicar PUESTO de inmediato
+            estadoFinalChaleco = 'PUESTO';
+          } else {
+            // No inventar PUESTO si no hay lectura válida reconocida
+            estadoFinalChaleco = 'DESCONOCIDO';
+          }
+
+          print('[CHALECO DEBUG] ESTADO PROCESADO: $estadoFinalChaleco');
+
           chaleco = EppItem(
             nombre: 'Chaleco',
-            estado: estadoChalecoRaw.isNotEmpty && estadoChalecoRaw != 'DESCONOCIDO'
-                ? estadoChalecoRaw
-                : (datos?.chaleco.estado != null && datos!.chaleco.estado != 'DESCONOCIDO'
-                    ? datos!.chaleco.estado
-                    : 'PUESTO'),
+            estado: estadoFinalChaleco,
             incidencias: _contadorIncidencias['Chaleco'] ?? 0,
             desconexiones: _contadorDesconexiones['Chaleco'] ?? 0,
             conexion: 'CONECTADO',
             tipo: 'SECUNDARIO',
           );
         } else {
-          // Si hubo un fallo puntual de comunicación (< 3 intentos) y ya teníamos datos válidos:
+          // Si hubo un fallo puntual de comunicación (< 2 intentos) y ya teníamos datos válidos:
           _fallosConsecutivosChaleco++;
-          if (_fallosConsecutivosChaleco < 3 &&
+          if (_fallosConsecutivosChaleco < 2 &&
               datos != null &&
               datos!.chaleco.conexion == 'CONECTADO') {
             chaleco = EppItem(
@@ -1245,11 +1415,13 @@ class _DashboardPageState
               tipo: 'SECUNDARIO',
             );
           }
+          print('[CHALECO DEBUG] ESTADO PROCESADO (DESCONECTADO/FALLO): ${chaleco.estado} | Conexión: ${chaleco.conexion}');
         }
       } else {
+        print('[CHALECO DEBUG] ESTADO RAW: rawChaleco no es Map ($rawChaleco)');
         if (datos != null &&
             datos!.chaleco.conexion == 'CONECTADO' &&
-            _fallosConsecutivosChaleco < 3) {
+            _fallosConsecutivosChaleco < 2) {
           _fallosConsecutivosChaleco++;
           chaleco = EppItem(
             nombre: 'Chaleco',
@@ -1269,12 +1441,15 @@ class _DashboardPageState
             tipo: 'SECUNDARIO',
           );
         }
+        print('[CHALECO DEBUG] ESTADO PROCESADO: ${chaleco.estado} | Conexión: ${chaleco.conexion}');
       }
 
       print('🦺 CHALECO: ESTADO=${chaleco.estado} | CONEXIÓN=${chaleco.conexion}');
 
       // ========================================================
       // 3. LENTES (SECUNDARIO) - TOTALMENTE INDEPENDIENTE
+      // "RETIRADO" JAMÁS significa "DESCONECTADO".
+      // Que el casco u otro EPP esté RETIRADO no modifica los lentes.
       // ========================================================
       EppItem lentes;
       final dynamic rawLentes = jsonData['lentes'];
@@ -1283,31 +1458,68 @@ class _DashboardPageState
             Map<String, dynamic>.from(rawLentes);
 
         final String estadoLentesRaw =
-            datosLentes['estado']?.toString().trim().toUpperCase() ?? '';
+            datosLentes['estado']?.toString() ?? '';
 
         final String conexionLentesRaw =
-            datosLentes['conexion']?.toString().trim().toUpperCase() ?? '';
+            datosLentes['conexion']?.toString() ?? '';
+
+        final String estadoLentesNormalizado =
+            estadoLentesRaw.trim().toUpperCase();
+
+        final String conexionLentesNormalizada =
+            conexionLentesRaw.trim().toUpperCase();
 
         final bool lentesEstaConectado = (datosLentes['conectado'] == true ||
-            conexionLentesRaw == 'CONECTADO');
+            conexionLentesNormalizada == 'CONECTADO');
+
+        print('[LENTES DEBUG] ESTADO RAW: "$estadoLentesRaw" | CONEXIÓN: "$conexionLentesRaw"');
 
         if (lentesEstaConectado) {
+          final bool reconexionDetectada =
+              datos != null && datos!.lentes.conexion == 'DESCONECTADO';
+          if (reconexionDetectada) {
+            print('[LENTES RECONEXIÓN] 👓 Lentes reconectados. Cancelando estado previo de desconexión.');
+          }
           _fallosConsecutivosLentes = 0;
+
+          final String estadoFinalLentes;
+          if (estadoLentesNormalizado == 'RETIRADO') {
+            estadoFinalLentes = 'RETIRADO';
+          } else if (estadoLentesNormalizado == 'PUESTO') {
+            estadoFinalLentes = 'PUESTO';
+          } else {
+            estadoFinalLentes = 'DESCONOCIDO';
+          }
+
+          print('[LENTES DEBUG] ESTADO PROCESADO: $estadoFinalLentes');
+          print('[LENTES DEBUG] CONEXIÓN: CONECTADO');
+
           lentes = EppItem(
             nombre: 'Lentes',
-            estado: estadoLentesRaw.isNotEmpty && estadoLentesRaw != 'DESCONOCIDO'
-                ? estadoLentesRaw
-                : (datos?.lentes.estado != null && datos!.lentes.estado != 'DESCONOCIDO'
-                    ? datos!.lentes.estado
-                    : 'PUESTO'),
+            estado: estadoFinalLentes,
             incidencias: _contadorIncidencias['Lentes'] ?? 0,
             desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
             conexion: 'CONECTADO',
             tipo: 'SECUNDARIO',
           );
+        } else if (conexionLentesNormalizada == 'DESCONECTADO') {
+          // El CASCO confirmó explícitamente que los Lentes no respondieron a su consulta HTTP.
+          // Procesar DESCONECTADO de inmediato en la primera respuesta válida sin esperas duplicadas.
+          _fallosConsecutivosLentes = 2;
+          lentes = EppItem(
+            nombre: 'Lentes',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Lentes'] ?? 0,
+            desconexiones: _contadorDesconexiones['Lentes'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
+          print('[LENTES DEBUG] ESTADO PROCESADO: DESCONOCIDO');
+          print('[LENTES DEBUG] CONEXIÓN: DESCONECTADO (CONFIRMADO POR CASCO)');
         } else {
+          // Fallo puntual o lectura no determinada: mantener filtro de tolerancia transitorio
           _fallosConsecutivosLentes++;
-          if (_fallosConsecutivosLentes < 3 &&
+          if (_fallosConsecutivosLentes < 2 &&
               datos != null &&
               datos!.lentes.conexion == 'CONECTADO') {
             lentes = EppItem(
@@ -1318,6 +1530,8 @@ class _DashboardPageState
               conexion: 'CONECTADO',
               tipo: 'SECUNDARIO',
             );
+            print('[LENTES DEBUG] ESTADO PROCESADO (TOLERANCIA $_fallosConsecutivosLentes/2): ${lentes.estado}');
+            print('[LENTES DEBUG] CONEXIÓN: CONECTADO (RETENIDO)');
           } else {
             lentes = EppItem(
               nombre: 'Lentes',
@@ -1327,13 +1541,16 @@ class _DashboardPageState
               conexion: 'DESCONECTADO',
               tipo: 'SECUNDARIO',
             );
+            print('[LENTES DEBUG] ESTADO PROCESADO: ${lentes.estado}');
+            print('[LENTES DEBUG] CONEXIÓN: DESCONECTADO');
           }
         }
       } else {
+        print('[LENTES DEBUG] ESTADO RAW: rawLentes no es Map ($rawLentes)');
+        _fallosConsecutivosLentes++;
         if (datos != null &&
             datos!.lentes.conexion == 'CONECTADO' &&
-            _fallosConsecutivosLentes < 3) {
-          _fallosConsecutivosLentes++;
+            _fallosConsecutivosLentes < 2) {
           lentes = EppItem(
             nombre: 'Lentes',
             estado: datos!.lentes.estado,
@@ -1342,6 +1559,8 @@ class _DashboardPageState
             conexion: 'CONECTADO',
             tipo: 'SECUNDARIO',
           );
+          print('[LENTES DEBUG] ESTADO PROCESADO (TOLERANCIA $_fallosConsecutivosLentes/2): ${lentes.estado}');
+          print('[LENTES DEBUG] CONEXIÓN: CONECTADO (RETENIDO)');
         } else {
           lentes = EppItem(
             nombre: 'Lentes',
@@ -1351,6 +1570,8 @@ class _DashboardPageState
             conexion: 'DESCONECTADO',
             tipo: 'SECUNDARIO',
           );
+          print('[LENTES DEBUG] ESTADO PROCESADO: ${lentes.estado}');
+          print('[LENTES DEBUG] CONEXIÓN: DESCONECTADO');
         }
       }
 
@@ -1377,23 +1598,46 @@ class _DashboardPageState
             conexionGuanteRaw == 'CONECTADO');
 
         if (guanteEstaConectado) {
+          final bool reconexionDetectada =
+              datos != null && datos!.guanteDerecho.conexion == 'DESCONECTADO';
+          if (reconexionDetectada) {
+            print('[GUANTE DERECHO RECONEXIÓN] 🧤 Guante derecho reconectado. Cancelando estado previo de desconexión.');
+          }
           _fallosConsecutivosGuanteDerecho = 0;
+
+          final String estadoFinalGuante;
+          if (estadoGuanteRaw.contains('RETIRADO')) {
+            estadoFinalGuante = 'RETIRADO';
+          } else if (estadoGuanteRaw.contains('PUESTO')) {
+            estadoFinalGuante = 'PUESTO';
+          } else {
+            estadoFinalGuante = 'DESCONOCIDO';
+          }
+
           guanteDerecho = EppItem(
             nombre: 'Guante derecho',
-            estado: estadoGuanteRaw.isNotEmpty && estadoGuanteRaw != 'DESCONOCIDO'
-                ? estadoGuanteRaw
-                : (datos?.guanteDerecho.estado != null && datos!.guanteDerecho.estado != 'DESCONOCIDO'
-                    ? datos!.guanteDerecho.estado
-                    : (estadoGuanteRaw.isNotEmpty ? estadoGuanteRaw : 'DESCONOCIDO')),
+            estado: estadoFinalGuante,
             incidencias: _contadorIncidencias['Guante derecho'] ?? 0,
             desconexiones: _contadorDesconexiones['Guante derecho'] ?? 0,
             conexion: 'CONECTADO',
             tipo: 'SECUNDARIO',
           );
+        } else if (conexionGuanteRaw == 'DESCONECTADO') {
+          // El CASCO confirmó explícitamente que el Guante derecho no respondió a su consulta HTTP.
+          // Procesar DESCONECTADO de inmediato en la primera respuesta válida sin esperas duplicadas.
+          _fallosConsecutivosGuanteDerecho = 2;
+          guanteDerecho = EppItem(
+            nombre: 'Guante derecho',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Guante derecho'] ?? 0,
+            desconexiones: _contadorDesconexiones['Guante derecho'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
         } else {
-          // Si hubo un fallo puntual de comunicación (< 3 intentos) y ya teníamos datos válidos:
+          // Fallo puntual o lectura no determinada: mantener filtro de tolerancia transitorio
           _fallosConsecutivosGuanteDerecho++;
-          if (_fallosConsecutivosGuanteDerecho < 3 &&
+          if (_fallosConsecutivosGuanteDerecho < 2 &&
               datos != null &&
               datos!.guanteDerecho.conexion == 'CONECTADO') {
             guanteDerecho = EppItem(
@@ -1416,10 +1660,10 @@ class _DashboardPageState
           }
         }
       } else {
+        _fallosConsecutivosGuanteDerecho++;
         if (datos != null &&
             datos!.guanteDerecho.conexion == 'CONECTADO' &&
-            _fallosConsecutivosGuanteDerecho < 3) {
-          _fallosConsecutivosGuanteDerecho++;
+            _fallosConsecutivosGuanteDerecho < 2) {
           guanteDerecho = EppItem(
             nombre: 'Guante derecho',
             estado: datos!.guanteDerecho.estado,
@@ -1463,23 +1707,46 @@ class _DashboardPageState
             conexionGuanteRaw == 'CONECTADO');
 
         if (guanteEstaConectado) {
+          final bool reconexionDetectada =
+              datos != null && datos!.guanteIzquierdo.conexion == 'DESCONECTADO';
+          if (reconexionDetectada) {
+            print('[GUANTE IZQUIERDO RECONEXIÓN] 🧤 Guante izquierdo reconectado. Cancelando estado previo de desconexión.');
+          }
           _fallosConsecutivosGuanteIzquierdo = 0;
+
+          final String estadoFinalGuante;
+          if (estadoGuanteRaw.contains('RETIRADO')) {
+            estadoFinalGuante = 'RETIRADO';
+          } else if (estadoGuanteRaw.contains('PUESTO')) {
+            estadoFinalGuante = 'PUESTO';
+          } else {
+            estadoFinalGuante = 'DESCONOCIDO';
+          }
+
           guanteIzquierdo = EppItem(
             nombre: 'Guante izquierdo',
-            estado: estadoGuanteRaw.isNotEmpty && estadoGuanteRaw != 'DESCONOCIDO'
-                ? estadoGuanteRaw
-                : (datos?.guanteIzquierdo.estado != null && datos!.guanteIzquierdo.estado != 'DESCONOCIDO'
-                    ? datos!.guanteIzquierdo.estado
-                    : (estadoGuanteRaw.isNotEmpty ? estadoGuanteRaw : 'DESCONOCIDO')),
+            estado: estadoFinalGuante,
             incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
             desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
             conexion: 'CONECTADO',
             tipo: 'SECUNDARIO',
           );
+        } else if (conexionGuanteRaw == 'DESCONECTADO') {
+          // El CASCO confirmó explícitamente que el Guante izquierdo no respondió a su consulta HTTP.
+          // Procesar DESCONECTADO de inmediato en la primera respuesta válida sin esperas duplicadas.
+          _fallosConsecutivosGuanteIzquierdo = 2;
+          guanteIzquierdo = EppItem(
+            nombre: 'Guante izquierdo',
+            estado: 'DESCONOCIDO',
+            incidencias: _contadorIncidencias['Guante izquierdo'] ?? 0,
+            desconexiones: _contadorDesconexiones['Guante izquierdo'] ?? 0,
+            conexion: 'DESCONECTADO',
+            tipo: 'SECUNDARIO',
+          );
         } else {
-          // Si hubo un fallo puntual de comunicación (< 3 intentos) y ya teníamos datos válidos:
+          // Fallo puntual o lectura no determinada: mantener filtro de tolerancia transitorio
           _fallosConsecutivosGuanteIzquierdo++;
-          if (_fallosConsecutivosGuanteIzquierdo < 3 &&
+          if (_fallosConsecutivosGuanteIzquierdo < 2 &&
               datos != null &&
               datos!.guanteIzquierdo.conexion == 'CONECTADO') {
             guanteIzquierdo = EppItem(
@@ -1502,10 +1769,10 @@ class _DashboardPageState
           }
         }
       } else {
+        _fallosConsecutivosGuanteIzquierdo++;
         if (datos != null &&
             datos!.guanteIzquierdo.conexion == 'CONECTADO' &&
-            _fallosConsecutivosGuanteIzquierdo < 3) {
-          _fallosConsecutivosGuanteIzquierdo++;
+            _fallosConsecutivosGuanteIzquierdo < 2) {
           guanteIzquierdo = EppItem(
             nombre: 'Guante izquierdo',
             estado: datos!.guanteIzquierdo.estado,
@@ -1571,12 +1838,21 @@ class _DashboardPageState
       );
 
       // ========================================================
-      // PROCESAR CONTADORES DE EVENTOS
+      // 1. ACTUALIZAR HISTORIAL DE INCIDENCIAS INMEDIATAMENTE
+      // Cancela de inmediato la incidencia anterior (ej: Lentes DESCONECTADO)
+      // para que la interfaz se pinte limpia sin desfase ni esperas.
       // ========================================================
-      await _procesarContadores(nuevoEstado);
+      _actualizarHistorialIncidencias(nuevoEstado);
 
       // ========================================================
-      // ACTUALIZAR INTERFAZ
+      // 2. PROCESAR ALERTAS INMEDIATAMENTE
+      // Interrumpe la voz o alarma previa en el motor de alertas
+      // en el mismo instante en que se confirma el nuevo estado.
+      // ========================================================
+      unawaited(_procesarAlertas(nuevoEstado));
+
+      // ========================================================
+      // 3. ACTUALIZAR INTERFAZ
       // ========================================================
       if (!mounted) {
         return;
@@ -1591,10 +1867,11 @@ class _DashboardPageState
       });
 
       // ========================================================
-      // PROCESAR ALERTAS Y HISTORIAL
+      // 4. PROCESAR Y GUARDAR CONTADORES EN SEGUNDO PLANO
+      // El guardado en disco (SharedPreferences) se realiza de forma
+      // asíncrona sin bloquear la UI ni retrasar la interrupción de alertas.
       // ========================================================
-      unawaited(_procesarAlertas(nuevoEstado));
-      _actualizarHistorialIncidencias(nuevoEstado);
+      unawaited(_procesarContadores(nuevoEstado));
 
       print('✅ DATOS MOSTRADOS EN LA APP');
     } catch (e) {
@@ -1602,7 +1879,7 @@ class _DashboardPageState
 
       _fallosConsecutivosCasco++;
 
-      if (_fallosConsecutivosCasco < 3 && datos != null) {
+      if (_fallosConsecutivosCasco < 2 && datos != null) {
         if (mounted) {
           setState(() {
             horaActual = DateTime.now();
@@ -1676,50 +1953,97 @@ class _DashboardPageState
 
             const SizedBox(width: 12),
 
-            const Column(
-              crossAxisAlignment:
-              CrossAxisAlignment.start,
-              children: [
-
-                Text(
-                  'SafeVisionEPP',
-                  style: TextStyle(
-                    fontWeight:
-                    FontWeight.bold,
-                    fontSize: 19,
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'SafeVisionEPP',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                    ),
                   ),
-                ),
-
-                Text(
-                  'Monitoreo de EPP',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color:
-                    Colors.white70,
+                  Text(
+                    'Monitoreo de EPP',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.white70,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
 
         actions: [
-
+          // ========================================================
+          // 1. BOCINA: ALARMA ACÚSTICA ON / OFF
+          // ========================================================
           IconButton(
-            tooltip: 'Actualizar',
-            onPressed: actualizarDatos,
-            icon: const Icon(
-              Icons.refresh,
+            tooltip: _alarmaHabilitada
+                ? 'Alarma acústica activada (tocar para silenciar)'
+                : 'Alarma acústica silenciada (tocar para activar)',
+            onPressed: _toggleAlarma,
+            icon: Icon(
+              _alarmaHabilitada ? Icons.volume_up : Icons.volume_off,
+              color: _alarmaHabilitada
+                  ? const Color(0xFF2DD4BF)
+                  : Colors.white38,
+              size: 22,
             ),
           ),
 
-          const SizedBox(width: 8),
+          // ========================================================
+          // 2. ACTUALIZAR: CONSULTA MANUAL AL CASCO CENTRAL
+          // ========================================================
+          IconButton(
+            tooltip: _actualizandoManual
+                ? 'Actualizando datos...'
+                : 'Actualizar estado ahora',
+            onPressed: _actualizandoManual ? null : _actualizarManualmente,
+            icon: RotationTransition(
+              turns: _refreshAnimController,
+              child: Icon(
+                Icons.refresh,
+                color: _actualizandoManual
+                    ? const Color(0xFF2DD4BF)
+                    : Colors.white,
+                size: 24,
+              ),
+            ),
+          ),
+
+          // ========================================================
+          // 3. PERSONA HABLANDO: VOZ TTS ON / OFF
+          // ========================================================
+          IconButton(
+            tooltip: _vozHabilitada
+                ? 'Voz TTS activada (tocar para silenciar)'
+                : 'Voz TTS silenciada (tocar para activar)',
+            onPressed: _toggleVoz,
+            icon: Icon(
+              _vozHabilitada
+                  ? Icons.record_voice_over
+                  : Icons.voice_over_off,
+              color: _vozHabilitada
+                  ? const Color(0xFF2DD4BF)
+                  : Colors.white38,
+              size: 22,
+            ),
+          ),
+
+          const SizedBox(width: 4),
         ],
       ),
 
       body: RefreshIndicator(
 
-        onRefresh: actualizarDatos,
+        onRefresh: _actualizarManualmente,
 
         child: datos == null
             ? _pantallaInicial()
@@ -2572,6 +2896,12 @@ class _DashboardPageState
 
     final bool estaPuesto =
         item.estado.trim().toUpperCase() == 'PUESTO';
+
+    if (item.nombre == 'Chaleco') {
+      print('[CHALECO DEBUG] ESTADO UI: ${item.estado} | CONEXIÓN: ${item.conexion}');
+    } else if (item.nombre == 'Lentes') {
+      print('[LENTES DEBUG] ESTADO UI: ${item.estado} | CONEXIÓN: ${item.conexion}');
+    }
 
     final bool correcto =
         estaConectado && estaPuesto;

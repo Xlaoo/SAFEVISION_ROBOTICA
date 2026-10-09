@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AlertService {
   static final AudioPlayer _audioPlayer = AudioPlayer();
@@ -13,6 +14,16 @@ class AlertService {
   static final FlutterTts _tts = FlutterTts();
 
   static bool _initialized = false;
+
+  // ==========================================================
+  // INTERRUPTORES INDEPENDIENTES DE AUDIO
+  // ==========================================================
+
+  static bool _alarmaHabilitada = true;
+  static bool _vozHabilitada = true;
+
+  static bool get alarmaHabilitada => _alarmaHabilitada;
+  static bool get vozHabilitada => _vozHabilitada;
 
   // ==========================================================
   // ESTADOS ACTUALES
@@ -31,6 +42,7 @@ class AlertService {
   // Completers activos para cancelar/desbloquear sin esperar timeouts
   static Completer<void>? _completerVozActual;
   static Completer<void>? _completerAudioActual;
+  static Completer<void>? _completerPausaActual;
 
   // ==========================================================
   // INICIALIZAR
@@ -38,6 +50,13 @@ class AlertService {
 
   static Future<void> initialize() async {
     if (_initialized) return;
+
+    // Cargar preferencias guardadas de audio
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _alarmaHabilitada = prefs.getBool('safevision_alarma_habilitada') ?? true;
+      _vozHabilitada = prefs.getBool('safevision_voz_habilitada') ?? true;
+    } catch (_) {}
 
     const AndroidInitializationSettings androidSettings =
     AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -70,10 +89,68 @@ class AlertService {
   }
 
   // ==========================================================
+  // CONFIGURACIÓN DE INTERRUPTORES DE AUDIO
+  // ==========================================================
+
+  static Future<void> setAlarmaHabilitada(bool valor) async {
+    _alarmaHabilitada = valor;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('safevision_alarma_habilitada', valor);
+    } catch (_) {}
+
+    if (!valor) {
+      // Silenciar inmediatamente si la alarma está sonando
+      try {
+        await _audioPlayer.stop();
+        await _audioPlayer.setReleaseMode(ReleaseMode.stop);
+      } catch (_) {}
+      if (_completerAudioActual != null && !_completerAudioActual!.isCompleted) {
+        _completerAudioActual!.complete();
+      }
+    } else {
+      // Si se activa y hay incidencias activas, despertar pausas para reanudar alarma
+      if (_hayProblemaActivo() && _completerPausaActual != null && !_completerPausaActual!.isCompleted) {
+        _completerPausaActual!.complete();
+      }
+    }
+  }
+
+  static Future<void> setVozHabilitada(bool valor) async {
+    _vozHabilitada = valor;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('safevision_voz_habilitada', valor);
+    } catch (_) {}
+
+    if (!valor) {
+      // Detener inmediatamente si la locución TTS está hablando
+      try {
+        await _tts.stop();
+      } catch (_) {}
+      if (_completerVozActual != null && !_completerVozActual!.isCompleted) {
+        _completerVozActual!.complete();
+      }
+    } else {
+      // Si se activa y hay incidencias activas, despertar pausas para reanudar locución
+      if (_hayProblemaActivo() && _completerPausaActual != null && !_completerPausaActual!.isCompleted) {
+        _completerPausaActual!.complete();
+      }
+    }
+  }
+
+  static bool _hayProblemaActivo() {
+    return _centralDesconectadaActual ||
+        _retiradosActuales.isNotEmpty ||
+        _desconectadosActuales.isNotEmpty;
+  }
+
+  // ==========================================================
   // HABLAR Y ESPERAR A QUE TERMINE (CON PREEMCIÓN INMEDIATA)
   // ==========================================================
 
   static Future<void> _hablarCompleto(String mensaje, int ciclo) async {
+    if (!_vozHabilitada) return;
     if (ciclo != _ciclo) return;
 
     final completer = Completer<void>();
@@ -114,7 +191,7 @@ class AlertService {
       }
 
       await completer.future.timeout(
-        const Duration(seconds: 7),
+        const Duration(seconds: 15),
         onTimeout: () {
           completar();
         },
@@ -129,16 +206,20 @@ class AlertService {
   }
 
   // ==========================================================
-  // REPRODUCIR SONIDO COMPLETO (CON PREEMCIÓN INMEDIATA)
+  // REPRODUCIR SONIDO COMPLETO (ALARMA 10 SEGUNDOS)
   // ==========================================================
 
   static Future<void> _reproducirSonidoCompleto(int ciclo) async {
+    if (!_alarmaHabilitada) {
+      if (_vozHabilitada) {
+        await _pausaInterrumpible(const Duration(seconds: 10), ciclo);
+      }
+      return;
+    }
     if (ciclo != _ciclo) return;
 
     final completer = Completer<void>();
     _completerAudioActual = completer;
-
-    StreamSubscription? subscription;
 
     void completar() {
       if (!completer.isCompleted) {
@@ -147,17 +228,12 @@ class AlertService {
     }
 
     try {
-      subscription = _audioPlayer.onPlayerComplete.listen((_) {
-        if (_ciclo == ciclo) {
-          completar();
-        }
-      });
-
       if (ciclo != _ciclo) {
         completar();
         return;
       }
 
+      await _audioPlayer.setReleaseMode(ReleaseMode.loop);
       await _audioPlayer.play(
         AssetSource('audio/alerta_epp.mp3'),
       );
@@ -170,8 +246,9 @@ class AlertService {
         return;
       }
 
+      // Alarma suena exactamente durante 10 segundos
       await completer.future.timeout(
-        const Duration(seconds: 4),
+        const Duration(seconds: 10),
         onTimeout: () {
           completar();
         },
@@ -180,10 +257,42 @@ class AlertService {
       completar();
     } finally {
       try {
-        await subscription?.cancel();
+        await _audioPlayer.stop();
+        await _audioPlayer.setReleaseMode(ReleaseMode.stop);
       } catch (_) {}
       if (_completerAudioActual == completer) {
         _completerAudioActual = null;
+      }
+    }
+  }
+
+  // ==========================================================
+  // PAUSA INTERRUMPIBLE ENTRE VOZ Y ALARMA
+  // ==========================================================
+
+  static Future<void> _pausaInterrumpible(
+      Duration duracion, int ciclo) async {
+    if (ciclo != _ciclo) return;
+
+    final completer = Completer<void>();
+    _completerPausaActual = completer;
+
+    try {
+      await completer.future.timeout(
+        duracion,
+        onTimeout: () {
+          if (!completer.isCompleted) {
+            completer.complete();
+          }
+        },
+      );
+    } catch (_) {
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    } finally {
+      if (_completerPausaActual == completer) {
+        _completerPausaActual = null;
       }
     }
   }
@@ -274,9 +383,11 @@ class AlertService {
 
     final Completer<void>? completerVozViejo = _completerVozActual;
     final Completer<void>? completerAudioViejo = _completerAudioActual;
+    final Completer<void>? completerPausaViejo = _completerPausaActual;
 
     _completerVozActual = null;
     _completerAudioActual = null;
+    _completerPausaActual = null;
 
     if (completerVozViejo != null && !completerVozViejo.isCompleted) {
       completerVozViejo.complete();
@@ -284,11 +395,15 @@ class AlertService {
     if (completerAudioViejo != null && !completerAudioViejo.isCompleted) {
       completerAudioViejo.complete();
     }
+    if (completerPausaViejo != null && !completerPausaViejo.isCompleted) {
+      completerPausaViejo.complete();
+    }
 
     final int cicloActual = ++_ciclo;
 
     try {
       await _audioPlayer.stop();
+      await _audioPlayer.setReleaseMode(ReleaseMode.stop);
     } catch (_) {}
 
     try {
@@ -478,29 +593,39 @@ class AlertService {
           : mensaje;
       primerPaso = false;
 
-      // 1. PRIMERO SIEMPRE VA LA VOZ
-      await _hablarCompleto(textoAHablar, ciclo);
+      // Si ambos canales de audio están silenciados, esperar en pausa interrumpible
+      if (!_vozHabilitada && !_alarmaHabilitada) {
+        await _pausaInterrumpible(const Duration(seconds: 5), ciclo);
+        continue;
+      }
+
+      // 1. PRIMERO SIEMPRE VA LA VOZ (si está habilitada)
+      if (_vozHabilitada) {
+        await _hablarCompleto(textoAHablar, ciclo);
+      }
 
       if (!_puedeContinuar(ciclo)) {
         break;
       }
 
-      // Pequeña pausa de inteligibilidad (500 ms)
-      await Future<void>.delayed(const Duration(milliseconds: 500));
+      // Pequeña pausa entre voz y alarma (300 ms) solo si ambos canales van a sonar consecutivamente
+      if (_vozHabilitada && _alarmaHabilitada) {
+        await _pausaInterrumpible(const Duration(milliseconds: 300), ciclo);
+      }
 
       if (!_puedeContinuar(ciclo)) {
         break;
       }
 
-      // 2. DESPUÉS VA LA ALARMA
+      // 2. DESPUÉS VA LA ALARMA (10 SEGUNDOS si está habilitada)
       await _reproducirSonidoCompleto(ciclo);
 
       if (!_puedeContinuar(ciclo)) {
         break;
       }
 
-      // Pequeña pausa antes de volver a repetir la voz (1 segundo)
-      await Future<void>.delayed(const Duration(seconds: 1));
+      // Pequeña pausa antes de volver a repetir el ciclo (500 ms)
+      await _pausaInterrumpible(const Duration(milliseconds: 500), ciclo);
     }
   }
 
@@ -673,15 +798,20 @@ class AlertService {
   static Future<void> detenerAlertas() async {
     final Completer<void>? completerVozViejo = _completerVozActual;
     final Completer<void>? completerAudioViejo = _completerAudioActual;
+    final Completer<void>? completerPausaViejo = _completerPausaActual;
 
     _completerVozActual = null;
     _completerAudioActual = null;
+    _completerPausaActual = null;
 
     if (completerVozViejo != null && !completerVozViejo.isCompleted) {
       completerVozViejo.complete();
     }
     if (completerAudioViejo != null && !completerAudioViejo.isCompleted) {
       completerAudioViejo.complete();
+    }
+    if (completerPausaViejo != null && !completerPausaViejo.isCompleted) {
+      completerPausaViejo.complete();
     }
 
     _ciclo++;
@@ -692,6 +822,7 @@ class AlertService {
 
     try {
       await _audioPlayer.stop();
+      await _audioPlayer.setReleaseMode(ReleaseMode.stop);
     } catch (_) {}
 
     try {

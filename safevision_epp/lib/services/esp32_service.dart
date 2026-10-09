@@ -10,7 +10,7 @@ class Esp32Service {
   static const String ipCasco = '192.168.4.1';
 
   static const Duration timeout =
-  Duration(seconds: 5);
+  Duration(milliseconds: 2500);
 
 
   // ==========================================================
@@ -177,6 +177,8 @@ class Esp32Service {
           respuesta['chaleco'],
         );
 
+        print('[CHALECO DEBUG] JSON CASCO: $chaleco');
+
         final String estadoChaleco =
             chaleco['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
 
@@ -198,6 +200,7 @@ class Esp32Service {
 
       } else {
 
+        print('[CHALECO DEBUG] JSON CASCO: chaleco no presente o no es Map (${respuesta['chaleco']})');
         resultado['chaleco'] = null;
       }
 
@@ -212,6 +215,8 @@ class Esp32Service {
         Map<String, dynamic>.from(
           respuesta['lentes'],
         );
+
+        print('[LENTES DEBUG] JSON CASCO: $lentes');
 
         final String estadoLentes =
             lentes['estado']?.toString().trim().toUpperCase() ?? 'DESCONOCIDO';
@@ -234,6 +239,7 @@ class Esp32Service {
 
       } else {
 
+        print('[LENTES DEBUG] JSON CASCO: lentes no presente o no es Map (${respuesta['lentes']})');
         resultado['lentes'] = null;
       }
 
@@ -423,6 +429,11 @@ class Esp32Service {
       print(
         'CHALECO: '
             '${resultado['chaleco']}',
+      );
+
+      print(
+        'LENTES: '
+            '${resultado['lentes']}',
       );
 
       print(

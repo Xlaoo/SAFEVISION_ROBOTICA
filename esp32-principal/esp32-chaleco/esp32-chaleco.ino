@@ -131,19 +131,17 @@ String obtenerEstadoChaleco()
 
 void manejarEstado()
 {
-    int lectura =
-        digitalRead(
-            SENSOR_CHALECO
-        );
-
+    // Doble lectura con micro-verificación para filtrar rebotes mecánicos y ruido en GPIO 3
+    int l1 = digitalRead(SENSOR_CHALECO);
+    delayMicroseconds(50);
+    int l2 = digitalRead(SENSOR_CHALECO);
+    int lectura = (l1 == l2) ? l1 : digitalRead(SENSOR_CHALECO);
 
     String estado;
-
 
     // ======================================================
     // LOW = IMÁN DETECTADO
     // ======================================================
-
     if (lectura == LOW)
     {
         estado = "PUESTO";
@@ -153,102 +151,37 @@ void manejarEstado()
         estado = "RETIRADO";
     }
 
-
     // ======================================================
     // JSON
     // ======================================================
-
     String json =
         "{"
-
         "\"epp\":\"CHALECO\","
-
         "\"estado\":\"" +
         estado +
         "\","
-
         "\"sensor\":" +
         String(lectura) +
         ","
-
         "\"conectado\":true"
-
         "}";
 
-
     // ======================================================
-    // RESPONDER
+    // RESPONDER RÁPIDO CON CIERRE LIMPIO DE CONEXIÓN
     // ======================================================
-
+    server.sendHeader("Connection", "close");
     server.send(
         200,
         "application/json",
         json
     );
 
-
-    // ======================================================
-    // MONITOR SERIE
-    // ======================================================
-
-    Serial.println();
-
-    Serial.println(
-        "========================================"
-    );
-
-    Serial.println(
-        "SOLICITUD /estado"
-    );
-
-    Serial.println(
-        "========================================"
-    );
-
-    Serial.print(
-        "GPIO 3 = "
-    );
-
-    Serial.println(
-        lectura
-    );
-
-    Serial.print(
-        "CHALECO: "
-    );
-
-    Serial.println(
-        estado
-    );
-
-    Serial.print(
-        "IMAN: "
-    );
-
-    if (lectura == LOW)
-    {
-        Serial.println(
-            "DETECTADO"
-        );
-    }
-    else
-    {
-        Serial.println(
-            "NO DETECTADO"
-        );
-    }
-
-    Serial.print(
-        "RESPUESTA: "
-    );
-
-    Serial.println(
-        json
-    );
-
-    Serial.println(
-        "========================================"
-    );
+    // Monitor serie ágil sin bloquear la CPU con decenas de líneas
+    Serial.print(F("[CHALECO] /estado -> "));
+    Serial.print(estado);
+    Serial.print(F(" (GPIO 3="));
+    Serial.print(lectura);
+    Serial.println(F(")"));
 }
 
 
@@ -258,15 +191,15 @@ void manejarEstado()
 
 void manejarPing()
 {
+    server.sendHeader("Connection", "close");
     server.send(
         200,
         "application/json",
         "{\"ok\":true,\"epp\":\"CHALECO\"}"
     );
 
-
     Serial.println(
-        "PING recibido"
+        "[CHALECO] PING recibido"
     );
 }
 
@@ -357,7 +290,9 @@ void conectarWiFi()
 
     // 1. Modo Estación
     WiFi.mode(WIFI_STA);
-    delay(500);
+    WiFi.setAutoReconnect(true);
+    WiFi.setSleep(false); // Mantener radio siempre activo para responder sin demoras
+    delay(100);
     // SOLUCIÓN AL AUTH_EXPIRE DEL ESP32-C3 SUPER MINI
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
@@ -526,6 +461,7 @@ void eventoWiFi(WiFiEvent_t event, WiFiEventInfo_t info)
             break;
 
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            WiFi.setSleep(false);
             Serial.println();
             Serial.println("========================================");
             Serial.print("[WIFI] IP OBTENIDA: ");
@@ -560,7 +496,7 @@ void setup()
     );
     WiFi.onEvent(eventoWiFi);
 
-    delay(2000);
+    delay(200);
 
 
     // ======================================================
@@ -609,12 +545,7 @@ void setup()
     // INICIAR SERVIDOR
     // ======================================================
 
-    if (
-        WiFi.status() == WL_CONNECTED
-    )
-    {
-        iniciarServidor();
-    }
+    iniciarServidor();
 
 
     // ======================================================
@@ -704,7 +635,10 @@ void loop()
         server.handleClient();
     }
 
-    int lectura = digitalRead(SENSOR_CHALECO);
+    int l1 = digitalRead(SENSOR_CHALECO);
+    delayMicroseconds(50);
+    int l2 = digitalRead(SENSOR_CHALECO);
+    int lectura = (l1 == l2) ? l1 : digitalRead(SENSOR_CHALECO);
 
     if (lectura != ultimoEstado)
     {
@@ -735,23 +669,19 @@ void loop()
     }
 
     // ======================================================
-    // SI SE PERDIÓ WIFI, RECONECTAR
+    // SI SE PERDIÓ WIFI, RECONECTAR CONTROLADO NO BLOQUEANTE
     // ======================================================
-   if (WiFi.status() != WL_CONNECTED)
+    if (WiFi.status() != WL_CONNECTED)
     {
         static unsigned long ultimoIntento = 0;
-        if (millis() - ultimoIntento > 5000)
+        if (millis() - ultimoIntento > 2000)
         {
             ultimoIntento = millis();
             Serial.println();
-            Serial.println("WIFI DESCONECTADO");
-            Serial.println("INTENTANDO RECONECTAR...");
-            WiFi.disconnect();
-            delay(300);
-            WiFi.config(IP_CHALECO, GATEWAY, SUBNET, DNS);
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+            Serial.println("[WIFI] RECONECTANDO CHALECO AL CASCO...");
+            WiFi.reconnect();
         }
     }
 
-    delay(50);
+    delay(10);
 }
